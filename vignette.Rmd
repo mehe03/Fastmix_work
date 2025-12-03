@@ -1,0 +1,481 @@
+---
+title: "FastMix User Guide"
+author: "Hao Sun, Xing Qiu"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{FastMix User Guide}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r load-package, echo=FALSE, include=FALSE, message=FALSE}
+library(knitr)
+library(rmarkdown)
+library(FastMix)
+
+### some global parameters
+m = 5000
+n = 50
+bb <- c(1.5, 0, 0)   
+aa <- rep(0, 6); aa[1] <- .75
+sigma2.u <- 1
+sigma2.e <- 0.6
+sigma2.alpha <- 1.2
+sigma2.err <- 1/16
+
+# the data generation for main simulation
+data_gen <- function(m, n, seed = 1, outlier = T, cor = 0, balance = T, weight = F){
+  ## generate some new simulated data
+  n <- n
+  set.seed(seed)
+  CellProp <- cbind(Cell1=runif(n, .2, .3),
+                    Cell2=runif(n, .2, .3),
+                    Cell3=runif(n, .2, .3))
+  rownames(CellProp) <- paste0("Subj", 1:n)
+  Demo <- cbind(Severity=round(runif(n, 0, 10), 1),
+                Sex=c(rep(0, n/2), rep(1, n/2)))
+  rownames(Demo) <- paste0("Subj", 1:n)
+
+  ## generate some true signals
+
+  m <- m                               #genes
+  bb <- c(1.5, 0, 0)                     #assoc. w. CellProp
+  sigma2.u <- 1
+  sigma2.e <- 0.6
+  sigma2.alpha <- 1.2
+  sigma2.err <- 1/16
+  #sigma2.err <- 0.5 #i.i.d. noise
+  ## mean interactions
+  aa <- rep(0, 6); aa[1] <- .75
+
+  Bmat <- t(replicate(m, c(bb, 0, 0, aa)))
+  #Bmat <- t(replicate(m, c(1.5, 0.5, 0.5, -0.5, -0.5, 0.75, 0.5, 0.5, 0.5, -0.5, -0.5)))
+  L <- ncol(Bmat)
+  sdvec <- (c(rep(sigma2.u, 3), rep(sigma2.e,2), rep(sigma2.alpha, 6)))
+
+  if(outlier == T){
+    ### the location shift
+    idx = c(1,4,7,10)
+    str = sdvec[idx] * 3.5
+    OutSig = matrix(NA, ncol = 4, nrow = m)
+    for(i in 1:4){
+      OutSig[,i] <- c(rep(0, m * 0.05 * (i-1)), rep(str[i], m * 0.05), rep(0, m*(1 - i * 0.05)))
+    }
+    if(balance == T) OutSig <- OutSig * (2*rbinom(length(OutSig), 1, .5) - 1) # approximately 0 mean
+    else if (balance == F) OutSig <- OutSig * (2*rbinom(length(OutSig), 1, 0.9) - 1) # approximately 0 mean
+
+    Bmat[,idx] = Bmat[,idx] + OutSig
+    if(cor == 0){
+      Gmat <- matrix(rnorm(L*m),m,L) %*% diag(sdvec)
+      sigmamat = diag(sdvec^2)
+      for(i in 1:4){
+        Gmat[(m * 0.05 * (i-1)+1):(m * 0.05 * i), idx[i]] <- Gmat[(m * 0.05 * (i-1)+1):(m * 0.05 * i), idx[i]]
+      }
+    }
+    else{
+      cormat <- matrix(cor, ncol = 11, nrow = 11)
+      diag(cormat) = 1
+      sigmamat <- sweep(sweep(cormat, 1, sdvec, "*"), 2, sdvec, "*")
+      a = chol(sigmamat)
+      Gmat <- matrix(rnorm(L*m),m,L) %*% a
+      for(i in 1:4){
+        Gmat[(m * 0.05 * (i-1)+1):(m * 0.05 * i), idx[i]] <- Gmat[(m * 0.05 * (i-1)+1):(m * 0.05 * i), idx[i]]
+      }
+    }
+  }
+  else{
+    Bmat = Bmat
+    if(cor == 0){
+      Gmat <- matrix(rnorm(L*m),m,L) %*% diag(sdvec)
+      sigmamat = diag(sdvec^2)
+    }
+    else{
+      cormat <- matrix(cor, ncol = 11, nrow = 11)
+      diag(cormat) = 1
+      sigmamat <- sweep(sweep(cormat, 1, sdvec, "*"), 2, sdvec, "*")
+      a = chol(sigmamat)
+      Gmat <- matrix(rnorm(L*m),m,L) %*% a
+    }
+  }
+
+  ## generate the gene expression
+  if(typeof(weight) == "logical"){
+    if(weight == F){
+      Err <- matrix(rnorm(m*n, sd=sqrt(sigma2.err)), nrow=m, ncol=n)
+    }
+  }
+  else{ # i.d but not i.i.d
+    Err <- matrix(rnorm(m*n, sd=sqrt(sigma2.err)), nrow=m, ncol=n)
+    ### the cor structure
+    weight = weight
+    e = eigen(weight)
+    w = e$vectors %*% sqrt(diag(e$values)) %*% t(e$vectors)
+    Err = Err %*% w
+  }
+  colnames(Err) <- paste0("Subj", 1:n); rownames(Err) <- paste0("Gene", 1:m)
+
+  ## Use DataPrep to get Xmat; Y is irrelevant
+  Xmat <- t(DataPrep(Err, CellProp, Demo, w = diag(rep(1, n)))$X[1:n, -1])
+
+  ## the gene expression matrix
+  GeneExp <- (Bmat + Gmat) %*% Xmat + Err
+
+  return(list(GeneExp = GeneExp, CellProp = CellProp, Demo = Demo, Bmat = Bmat, Gmat = Gmat, sigmamat = sigmamat, Err = Err))
+}
+```
+
+
+In this Vignette, we describe the basic usage of the `FastMix` package. This package implements a fast parameter estimation and hypothesis testing framework for a special type of linear mixed effects model inspired by the deconvolution project.  Below we describe the inspiring problem, the mathematical model, and the usage of the main R function, `FastMix()`. 
+
+## Introduction
+
+We will briefly describe a motivating problem for which the `FastMix` package is applicable.
+
+In most genomic studies, gene expressions are quantified from a mixture of heterogeneous cells.  In certain cases, we may have matching phenotype data (often from flow-cytometry) which quantify the proportion of $k=1, 2, \dots, K$ types of cells in the sample. One popular task is to use the observed cell proportions to "deconvolute" the mixed gene expressions, namely, to obtain cell-specific gene expressions for each subject (henceforth denoted as $b_{kij}$, for the $k$th cell, $i$th gene, $j$th subject). 
+
+In a sense, the need for producing *subject-specific* expressions is primarily driven by the downstream statistical analysis, in which $b_{kij}$ are considered as new observations to be associated with subject-specific clinical covariates, such as the disease severity, age, and sex.
+
+From the statistical perspective, the main difficulty of the above approach is that the deconvolution step is a typical "large $p$, small $n$" problem.  For each gene, we have $n$ observations of the mixed gene expression; yet our goal is to produce $Kn$ estimates for each subject ($i=1, 2, \dots, n$) and each type of cell ($k=1, 2, \dots, K$).  While it is theoretically doable based on certain penalized regression, the resulting cell-specific expressions will inevitably have high level of variance.
+
+In this study, we take a different approach, namely, to combine the deconvolution step with the downstream analysis into a **single** mixed effects model.  The advantages of doing so are:
+
+1. Cell-specific gene expressions are modeled as a mixture of fixed and random effects, so each subject (and each cell, each gene) can have a different estimate $\hat{b}_{kij}$ via EBLUP (empirical best linear unbiased predictor).
+2. The degrees of freedom (unknown parameters) of the above model is small. Specifically, subject-specific variation of $\hat{b}_{kij}$ is controlled by clinical covariates via a linear model.
+2. The primary inference is based on the interaction between the cell proportions and clinical covariates, which pools all subjects, so there is no "small $n$, large $p$" problem. The results will be a set of $p$-values for each cell type and each clinical covariate.
+3. We also developed a novel gene prioritizing procedure based on the theory of outliers.  More specifically, among all the predicted random effect terms (cell, covariate, and gene) for a fixed cell and covariate, we will be able to identify those genes that are significantly different from the majority of genes. The result will be a 3D tensor of $p$-values for cell, covariate, and gene, as well as the the direction and magnitude of this random interaction term being greater than the average.
+
+In summary, we have designed a **one-step** inferential framework based on mixed effects regression and outlier analysis for the deconvolution analysis that greatly reduces the model complexity, yet still flexible enough to produce estimates of the association between the cell-specific gene expressions and clinical covariates, as well as their corresponding $p$-values for each gene, cell, and covariate.
+
+## Mathematical model
+
+Based on a simple additive model, $Y_{ji}$, the expression level of the $i$th gene, $i=1, 2, \dots, m$ for the $j$th subject, $j=1, 2, \dots, n$, can be described as 
+
+$$Y_{ji} = \sum_{k=1}^{K} C_{jk} b_{kij} + \sum_{p=1}^{P} Z_{jp} d_{pi} + \epsilon_{ji}. $$
+
+Here $C_{jk}$ is the proportion of the $k$th cell for the $j$th subject (measured by e.g., flow-cytometry); $b_{kij}$ is the expression of the $i$th gene produced by one unit of $k$th cell for the $j$th subject; $Z_{jp}$ is the value of the $p$th **standardized** clinical variable (such as age, sex, and severity; standardized so that all of them have mean zero and unit standard deviation therefore directly comparable) of the $j$th subject; $d_{pi}$ is the association of the $p$th clinical covariate to the $i$th gene; and $\epsilon_{ji}$ is the error term.  We further assume that the cell-specific expression, $b_{kij}$, and covariate-specific association, $d_{pi}$, have the following mixed effects structure 
+
+$$ b_{kij} = b_{k} + u_{ki} + \sum_{p=1}^{P} Z_{jp} (a_{pk} + \alpha_{pki}), \qquad d_{pi} = \delta_{p} + e_{pi}. $$
+
+Here $b_{k}$ is the mean contribution to expression from the $k$th cell to all genes; $u_{ki}$ is a random effect term specific to the $i$th gene;  $a_{pk}$ represents the mean (over all subjects and genes) association between $Z_{jp}$ and $b_{kij}$; and $\alpha_{pki}$ is a random effect term that describes the association of $Z_{jp}$ and a specific gene; $\delta_{p}$ is the overall association of $p$ to all genes and $e_{pi}$ is a random effect that describes the association between the $p$th covariate and the $i$th gene.
+
+We may merge the first two equations and obtain the following **combined model**
+
+$$ Y_{ji} = \sum_{l = 1}^{L} X_{jl} \left( \beta_{l} + \gamma_{li} \right) + \epsilon_{ji}. $$
+
+Here $X_{\cdot, \cdot}$ is the combined covariate matrix and it includes $C_{jk}$, $Z_{jp}$, and $C_{jk} Z_{jp}$. For example, if we have three types of cells and two clinical covariates, the total number of covariates would be $L = 3 + 2 + 3\times 2 = 11$. $\beta_{l}$ is the contribution of $X_{\cdot,l}$ (could be $C$, $Z$, or their interaction) to the entire transcriptome, and $\gamma_{li}$ is the random effect term that characterizes the effect of $X_{\cdot,l}$ to a specific gene.
+
+## Computational challenge and the Fast LMER algorithm
+
+The above model is a standard LMER so it can be fitted by a stock mixed effects regression software, such as R package `lme4`, the reference implementation of LMER in R.  However, due to the high-throughput nature of the data, fitting such a large regression model is computationally very demanding.  Furthermore, there are occasional convergence issues due to the use of the EM algorithm in `lme4` to the high-throughput data, which could do harm to the parameter estimation of interest. See the simulation studies in document `FAST_LMER_project.pdf`. 
+
+Instead, we developed an efficient estimation framework based on an initial OLS regression, moment method, and the EBLUP. For high-throughput data, the proposed method achieves comparable accuracy with the EM-based LMER ï¬tting algorithm with only a fraction of computational time. 
+
+## The outlier detection algorithm for the predicted random effects
+
+In addition, we develop a novel competitive hypothesis test to identify genes that have signiï¬cantly larger or smaller predicted random eï¬ect with a given
+covariatewe. It means for a given $l$, whether the estimated random effect for a specific gene ($\gamma_{li}$) is significantly different from its "main distribution".  Specifically, we consider that the previous **combined model** only describes the distribution of the majority of genes; and there may be small subsets of genes that have different distribution of linear coefficients.  In other words, if gene $i$ is in this subset, its linear coefficient associated some $X_{\cdot l}$ does **not** follow $N(\beta_{l}, \sigma_{\gamma_{l}}^2)$, and could be detected as an **outlier** from the major distribution.  
+
+The proposed outlier detection includes two steps: debias the covariance estimation of random effects caused by outliers and do z-test using weighted EBLUP . Step one is the core part and we briefly describe how to achieve it here: we first find the potential direction with outliers by a normal test of weighted EBLUP; we then construct a $\chi^2$-type statistics from OLS estimation and trim the extreme values to do gene selection; lastly we recover the covariance estimation of random effects according to the proporty of trimmed $\chi^2$-distribution. 
+Technical details and simulation results are summarized in another document, `FAST_LMER_project.pdf`.
+
+## Usage examples
+
+The primary function in our package is `FastMix()`.  It takes the following primary arguments: `GeneExp`, `CellProp`, `Clinical`, `random` and `robust`. Here `GeneExp` is a $m\times n$ dimensional gene expression matrix; `CellProp` is a $n\times K$ dimensional matrix of cell proportions; `Clinical` is a $n\times P$ dimensional matrix of clinical and demographic variables to be tested; `random` is an index vector that specifies which variable(s) requires random effects -- by default, all covariates are paired with a random effect and `robust` specifies whether robust covariance estimation is implemented and which method to use:  "FALSE" for non-robust estimation; "mcd" for the MCD algorithm of Rousseeuw and Van Driessen; "weighted" for the Reweighted MCD; "donostah" for the Donoho-Stahel projection based estimator; "pairwiseQC" for the orthogonalized quadrant correlation pairwise estimator. All these algorithms come from the R package `robust`. "FastMix" is the proposed trimming method.  
+
+## Simulation 
+
+We first generate a set of data, called `dat_train`, which contains $m=`r m`$ genes and $n=`r n`$ subjects. There are three cell types and the data are stored in object `CellProp`.  I created a clinical dataset called `Demo`, which consists of two variables, `Severity` and `Sex`.  Based on the previous discussion, the observed bulk gene expression may be associated with a total of $L=11$ covariates: 3 cell proportions, 2 clinical variables, and 6 of the interaction terms.  
+
+I created true associations between the covariates and gene expressions in this way. 
+
+1. Cell1 has overall association with all gene expressions; Cell 2 and 3 does not. Using previous notation, $b_1 = `r bb[1]`$, $b_2 = `r bb[2]`$, $b_3 = `r bb[3]`$.  
+2. The majority of the genes are associated with these cells with coefficients sampled from $N(0, \sigma_{u}^{2})$, $\sigma_{u} = `r sigma2.u`$.
+3. Neither Severity nor Sex has overall association with the entire transcriptome.  The majority of their coefficients follow $N(0, \sigma_{e}^{2})$, $\sigma_{e} = `r sigma2.e`$.
+4. The interaction between Cell1 and Severity has an overall impact on the transcriptome; the corresponding coefficients follows $N(\beta_6, \sigma_{\alpha}^2)$, $\beta_6 = `r aa[1]`$, $\sigma_{\alpha} = `r sigma2.alpha`$. 
+5. All other interaction terms do not have overall association with the transcriptome. The majority of these 11 coefficients has correlation 0. We then choose 4 out of 11 covariates to assign outliers. 
+6. The first 250 genes have strong association with Cell1, such that $b_{1i} = b_{1} \pm 3 \times \sigma_{u}$, with equal probability of positive or negative shift. In other words, their linear coefficients are outliers w.r.t. the major distribution.
+7. The linear coefficients between Genes 251 - 500 and Severity are outliers created in the same way ($\pm 3 \times \sigma_{e}$ units).
+8. The linear coefficients between Genes 501 - 750 and Cell2.Severity, and those between Genes 751 - 1000 and Cell2.Sex are outliers created in the same way ($\pm 3 \times \sigma_{\alpha}$ units).
+9. The variance of the noise, $\sigma_{\epsilon}^2$, is `r sigma2.err`.
+
+### Structure of Simulated Data
+
+The aforementioned data is provided as `dat_train` in `dataexample.rda`, distributed along with this R package, to examplify the simulated data. `dat_train` is a list of three objects: (a) object `CellProp`, which stores the proportion of cell types for each subject with 50 rows and 3 columns; object `Demo`, a clinical dataset which consists of two variables, `Severity` and `Sex`, for each subjects with 50 rows and 2 columns, and (c) object `GeneExp`, a  matrix with 5000 rows and 50 columns, stores the outcome of interest which consists of gene expression level with respect to subjects and genes. These three objects are required inputs for function `FastMix()`. Based on the previous discussion, the observed bulk gene expression may be associated with a total of $L=11$ covariates: 3 cell proportions, 2 clinical variables, and 6 of the interaction terms.  
+
+### Using FastMix to analyze the simulated data
+
+Below is the default way of using `FastMix` to analyze the simulated data
+
+```{r run-Fastmix, include=TRUE, echo=TRUE}
+
+library(FastMix)
+data(dat_train)                       #loads the sample data
+#vignette("FastMix")                     #shows this vignette
+
+## fitting the gene expression data, cell proportions, and demographic
+## data in one step. It takes about 10~15 seconds to finish computing
+system.time(mod1 <- FastMix(dat_train$GeneExp, dat_train$CellProp, dat_train$Demo, independent = F))
+
+### add this exmaple for later use: test score_func when 'include.demo = F'
+system.time(mod1_F <- FastMix(dat_train$GeneExp, dat_train$CellProp, dat_train$Demo, independent = F, include.demo = F))
+
+```
+
+Now let us summarize the results. First, let us check the fixed effects (the overall association between the covariates, their interactions, and the transcriptome
+
+```{r fixed-effects, include=TRUE, echo=TRUE, results='asis'}
+
+## 1. The overall association between covariates (with interactions)
+## and the entire transcriptome. We know that Cell1 is significantly
+## associated with all genes; and Cell1 has a significant interaction
+## with Severity (but not Sex). All other nine covariates are not
+## significant.
+kable(round(mod1$fixed.results, 4))
+
+```
+
+As we can see, FastMix correctly identified the only two truly significant covariates (Cell1 and the interaction between Cell1 and Severity).
+
+Next, we check the statistical power and type I error rate for the
+random effects. 
+
+
+```{r random-effects, include=TRUE, echo=TRUE, results='asis'}
+
+## (a) The first 250 genes have significant association with Cell1,
+## (b) genes 251-500 has significant association with Severity, (c)
+## genes 501 - 750 are significantly associated with Cell2.Severity,
+## and (d) genes 751 - 1000 are significantly associated with Cell2.Sex.
+m <- nrow(dat_train$GeneExp)
+n = nrow(dat_train$Demo)
+rr.cell1 <- c(Power=sum(mod1$re.ind.pvalue[1:250, "Cell1"]<0.05)/250,
+              TypeI.Err=sum(mod1$re.ind.pvalue[251:m, "Cell1"]<0.05)/(m-250))
+rr.severity <- c(Power=sum(mod1$re.ind.pvalue[251:500, "Severity"]<0.05)/250,
+                 TypeI.Err=sum(mod1$re.ind.pvalue[c(1:250, 501:m), "Severity"]<0.05)/(m-250))
+rr.cell2.severity <- c(Power=sum(mod1$re.ind.pvalue[501:750, "Cell2.Severity"]<0.05)/250,
+                 TypeI.Err=sum(mod1$re.ind.pvalue[c(1:500, 751:m), "Cell2.Severity"]<0.05)/(m-250))
+rr.cell2.sex <- c(Power=sum(mod1$re.ind.pvalue[751:1000, "Cell2.Sex"]<0.05)/250,
+                 TypeI.Err=sum(mod1$re.ind.pvalue[c(1:750, 1001:m), "Cell2.Sex"]<0.05)/(m-250))
+rr.others <- c(Power=NA, TypeI.Err=sum(mod1$re.ind.pvalue[, -c(1,4,10)]<0.05)/(m*8))
+retab <- cbind(Cell1=rr.cell1, Severity=rr.severity, Cell2.Severity=rr.cell2.severity,
+               Cell2.Sex=rr.cell2.sex, Others=rr.others)
+
+kable(round(retab, 3))
+
+```
+
+Judging from the above table, we see that for all covariates, the type I error is controlled at the nominal level. We also noticed that for all covariates, we have relatively good power to detect gene-specific associations between the covariates, including the interactions between cell proportion, clinical variables, and gene expressions.
+
+### Extention to weighted samples.
+
+In many applications, the noise may not be i.i.d.  One such example is that samples in the study may have different Total Number of Mapped Reads (TNMR, a.k.a. sequencing depths). This information is typically provided by the researchers as a quality metric, and can be considered as **inversely proportional** to the variance of the (properly normalized) expression levels in a sample.  In this case, we argue that using weights that are **proportional to** the TNMR will give us better results than a comparable model that treats all samples as equal.
+
+In this section, we consider the following simulation study:
+
+1. All subjects are independent, but are not identically distributed. The variance of the $j$th sample is considered as $1/\mathrm{TNMR}_{j}$, where $\mathrm{TNMR}_{j}$ is generated from a uniform distribution $U(1, 5)$ (reads in millions).
+2. We apply both the weighted FastMix model and the unweighted FastMix model to this set of data. The results are summarized in the following two tables.
+
+
+```{r weighted sample, include=TRUE, echo=TRUE, results='asis'}
+
+set.seed(1234)
+
+## Total number of mapped reads, a.k.a., sequencing depth, in millions.
+TNMR <- runif(50, min=1, max=5)
+
+## We assume that the variance is proportional to TNMR for
+## normalized expressions
+## we use sd = 1 as the baseline
+cov_matrix <- diag(max(TNMR)/TNMR)
+### we generate a weighted data
+dat = data_gen(m, n, seed = 1, outlier = T, cor = 0.5, balance = F, weight = cov_matrix)
+
+system.time(mod2 <- FastMix(dat$GeneExp, dat$CellProp, dat$Demo, independent = F, cov_matrix = cov_matrix))
+
+rr.cell1 <- c(Power=sum(mod2$re.ind.pvalue[1:250, "Cell1"]<0.05)/250,
+              TypeI.Err=sum(mod2$re.ind.pvalue[251:m, "Cell1"]<0.05)/(m-250))
+rr.severity <- c(Power=sum(mod2$re.ind.pvalue[251:500, "Severity"]<0.05)/250,
+                 TypeI.Err=sum(mod2$re.ind.pvalue[c(1:250, 501:m), "Severity"]<0.05)/(m-250))
+rr.cell2.severity <- c(Power=sum(mod2$re.ind.pvalue[501:750, "Cell2.Severity"]<0.05)/250,
+                 TypeI.Err=sum(mod2$re.ind.pvalue[c(1:500, 751:m), "Cell2.Severity"]<0.05)/(m-250))
+rr.cell2.sex <- c(Power=sum(mod2$re.ind.pvalue[751:1000, "Cell2.Sex"]<0.05)/250,
+                 TypeI.Err=sum(mod2$re.ind.pvalue[c(1:750, 1001:m), "Cell2.Sex"]<0.05)/(m-250))
+rr.others <- c(Power=NA, TypeI.Err=sum(mod2$re.ind.pvalue[, -c(1,4,10)]<0.05)/(m*8))
+retab <- cbind(Cell1=rr.cell1, Severity=rr.severity, Cell2.Severity=rr.cell2.severity,
+               Cell2.Sex=rr.cell2.sex, Others=rr.others)
+
+kable(round(retab, 3))
+
+set.seed(1234)
+system.time(mod3 <- FastMix(dat$GeneExp, dat$CellProp, dat$Demo, independent = F, cov_matrix = NULL))
+
+rr.cell1 <- c(Power=sum(mod3$re.ind.pvalue[1:250, "Cell1"]<0.05)/250,
+              TypeI.Err=sum(mod3$re.ind.pvalue[251:m, "Cell1"]<0.05)/(m-250))
+rr.severity <- c(Power=sum(mod3$re.ind.pvalue[251:500, "Severity"]<0.05)/250,
+                 TypeI.Err=sum(mod3$re.ind.pvalue[c(1:250, 501:m), "Severity"]<0.05)/(m-250))
+rr.cell2.severity <- c(Power=sum(mod3$re.ind.pvalue[501:750, "Cell2.Severity"]<0.05)/250,
+                 TypeI.Err=sum(mod3$re.ind.pvalue[c(1:500, 751:m), "Cell2.Severity"]<0.05)/(m-250))
+rr.cell2.sex <- c(Power=sum(mod3$re.ind.pvalue[751:1000, "Cell2.Sex"]<0.05)/250,
+                 TypeI.Err=sum(mod3$re.ind.pvalue[c(1:750, 1001:m), "Cell2.Sex"]<0.05)/(m-250))
+rr.others <- c(Power=NA, TypeI.Err=sum(mod3$re.ind.pvalue[, -c(1,4,10)]<0.05)/(m*8))
+retab3 <- cbind(Cell1=rr.cell1, Severity=rr.severity, Cell2.Severity=rr.cell2.severity,
+               Cell2.Sex=rr.cell2.sex, Others=rr.others)
+
+kable(round(retab3, 3))
+```
+
+The first table shows the results using sample-specific weights while the second table shows the results without sample-specific weights. We see that for all five covariates, the type I error is controlled at the nominal level for both methods. 
+
+When weights are used, we have relatively higher power to detect gene-specific associations between the covariates, especially for the interactions between cell proportion, clinical variables, and gene expressions. 
+
+Note that in our implementation of the weighted FastMix model, we can specify a much general covariance structure that could include both heterogeneous variances (as shown in the above example) and **correlation** among samples, possibly due to serial correlation in a longitudinal study.  Howver, as of now, we require that such correlation is known (or estimable from the data). Please see [Yun and Xing 2019 BMC Bioinformatics] for a moment-based method for estimating such complex covariance structure.  Also please see our current paper for more technical details of the weighted FastMix method.
+
+### Discriminant analysis based on the FastMix model
+
+
+In this section, we will present an example that uses the FastMix model to conduct a discriminant analysis for a specified binary outcome, such as the `Severity` variable stored in our simulated data, `dat_train`.  Please see our paper for technical details of our approaches.
+
+As in any practical discriminant analysis, models developed from a training dataset (`dat_train` in this example) should be validated on an independent testing data set.  To this end, we generate such a test data set, with the same simulation settings as `dat_train` and a larger sample size ($n=200$), and name it as `dat_test`.  
+
+Due to technical reasons, the test dataset needs to be pre-processed before model development.  This can be done by calling function `DataPrep_test()`, and the results are designated as `Data_1` and `Data_0`.  We need to provide with `DataPrep_test()` the index of the binary outcome to be classified in the original data, such as `Sex` in our example.  After this processing step, `DataPrep_test()` will automatically rename it as `Res` (stands for "Response"), and all the other covariates as `Var1`, `Var2`, etc.  Note that by construction, the `Res` variable in these sets will be constants across all subjects with opposite signs. 
+
+
+```{r score1, include=TRUE, echo=TRUE, results='asis'}
+
+#================================================================================#
+#================= step 1: prepare the test data set  ===========================#
+#================================================================================#
+
+### this step cannot be wrap into the score function because we need
+### to check the Data2 to find the index
+
+## number of subjects in the test data
+n2 <- 200
+gnames <- rownames(dat_test$GeneExp); m <- nrow(dat_test$GeneExp)
+if (is.null(gnames)) {
+  rownames(dat_test$GeneExp) <- gnames <- paste0("Gene", 1:m)
+}
+
+### In reality, we do not know the true response status of the testing
+### data. However, we need to create a "Response" for these subjects
+### in order to do a proper standardization for the covariates.  These
+### two sets of data are standardized according to two different
+### "hypothetical" responses: Response==0 (Data_0), Response==1
+### (Data_1).
+
+### this code use the data in csSAM simulation. The difference is that Demo only includes response 
+#test_data = DataPrep_test(dat_test$GeneExp, dat_test$CellProp, Demo=NULL, train_response = dat$Demo, include.demo=TRUE, w)
+
+### this code use the data in main simulation. The difference is that Demo includes other variable than response 
+test_data = DataPrep_test(dat_test$GeneExp, dat_test$CellProp, Demo=dat_test$Demo[,1], 
+                          train_Demo = dat_train$Demo[,1], train_response = dat_train$Demo[,2], include.demo=TRUE)
+
+### here, we show an exmaple of test data set with include_demo = FALSE
+test_data_F = DataPrep_test(dat_test$GeneExp, dat_test$CellProp, Demo=dat_test$Demo[,1], 
+                            train_Demo = dat_train$Demo[,1], train_response = dat_train$Demo[,2], include.demo=FALSE)
+
+Data_0 = test_data$Data_0
+Data_1 = test_data$Data_1
+
+Data_0_F = test_data_F$Data_0
+Data_1_F = test_data_F$Data_1
+# Due to the way we assign hypothetical Response values, all entries
+# in Data_0 has "Response==0", and all entries in Data_0 has
+# one. Therefore, we expect the standardized Response from these two
+# datasets: (a) are the same for all entries within one dataset; (b)
+# have exactly the opposite sign between these two datasets.
+
+round(head(Data_1$X[,"Res"]),4)
+round(head(Data_0$X[,"Res"]),4)
+
+###when include.demo=FALSE, try the following code
+round(head(Data_1_F$X[,"Cell1.Res"]),4)
+round(head(Data_0_F$X[,"Cell1.Res"]),4)
+```
+
+Note that we must let the scoring function know that which variable in the testing data is the binary outcome to be classified (function `DataPrep_test()` automatically renames this variable as `Res` in the processed data, and renames all other covariates as `Vari`, $i=1,2,\dots$), and which variables are the interactions between `Res` and cell proportions.
+
+By checking the first few rows of the processed data, we find that the $5$th column is the binary response variable, and the $9, 10, 11$th columns are the interaction terms between the response and cell proportions.  This information will be used in `score_func()` to produce several discriminant scores.  the `single_score` (one dimensional) and `multi_score` (5,000-dimensional) are computed from *all genes* based on the theory of linear discriminant analysis; `single_sparse_score` (one dimensional) and `multi_sparse_score` are linear combinations of genes with significant interactions with the response variable. 
+
+Note that by selecting a more stringent significant level (via the `sig.level` parameter in `score_func()`) in `DiscrScores2`, we obtain a sparse discriminant score based on much **fewer** genes.
+
+
+```{r score2, include=TRUE, echo=TRUE, results='asis'}
+#================================================================================#
+#=============== step 3: clacluate the scores for classification ================#
+#================================================================================#
+
+# we can overview the data to find some useful index for the score
+# calculation. In this example, the 'Res' variable is the 5th column;
+# and the 9,10,11th columns are the interaction terms needed for
+# building the discriminant score.
+
+kable(round(head(Data_0$X),2))
+
+### the predicted score using main data set
+DiscrScores = score_func(mod1=mod1, Data_0, Data_1, Response_interaction_index = c(9,10,11), Response_idx=5)
+
+###this example shows how to use the score function with include_demo = FALSE
+DiscrScores_F = score_func(mod1=mod1_F, Data_0_F, Data_1_F, Response_interaction_index = c(7,8,9), Response_idx=NULL)
+## we can use a more stringent significant level to select fewer
+## features in the sparse discriminant score
+DiscrScores2 = score_func(mod1=mod1, Data_0, Data_1, Response_interaction_index = c(9,10,11), Response_idx=5, sig.level=0.005)
+
+## check the number of selected sig. interaction genes
+nrow(DiscrScores$multi_sparse_score)        #797 sig. genes
+nrow(DiscrScores2$multi_sparse_score)       #only 121 sig. genes
+
+
+```
+
+Finally, we show some summary plots and tables for the classification results. 
+
+```{r score2-summary, include=TRUE, echo=TRUE, results='asis', fig.width=5, fig.height=15}
+
+par(mfrow=c(3,1))
+xl <- c(min(DiscrScores$single_score)-2, max(DiscrScores$single_score)+2)
+hist(DiscrScores$single_score[1:n2/2], xlim = xl, main = "Distribution of the overall score", xlab = "Overall score", col=rgb(0.95,0.95,0.95,0.5))
+hist(DiscrScores$single_score[(n2/2+1):n2], col=rgb(0.05,0.05,0.05,0.5), add=TRUE)
+legend("topright", c("Res = 0", "Res = 1"), col = c(rgb(0.95,0.95,0.95,0.5), rgb(0.05,0.05,0.05,0.5)), lwd = 10, cex = 0.5)
+
+xl <- c(min(DiscrScores$single_sparse_score)-2, max(DiscrScores$single_sparse_score)+2)
+hist(DiscrScores$single_sparse_score[1:n2/2], xlim = xl, main = "Distribution of the sparse score 1", xlab = "Sparse score", col=rgb(0.95,0.95,0.95,0.5))
+hist(DiscrScores$single_sparse_score[(n2/2+1):n2], col=rgb(0.05,0.05,0.05,0.5), add=TRUE)
+legend("topright", c("Res = 0", "Res = 1"), col = c(rgb(0.95,0.95,0.95,0.5), rgb(0.05,0.05,0.05,0.5)), lwd = 10, cex = 0.5)
+
+## the second sparse score; with fewer features
+xl <- c(min(DiscrScores2$single_sparse_score)-2, max(DiscrScores2$single_sparse_score)+2)
+hist(DiscrScores2$single_sparse_score[1:n2/2], xlim = xl, main = "Distribution of the sparse score 2", xlab = "Sparse score", col=rgb(0.95,0.95,0.95,0.5))
+hist(DiscrScores2$single_sparse_score[(n2/2+1):n2], col=rgb(0.05,0.05,0.05,0.5), add=TRUE)
+legend("topright", c("Res = 0", "Res = 1"), col = c(rgb(0.95,0.95,0.95,0.5), rgb(0.05,0.05,0.05,0.5)), lwd = 10, cex = 0.5)
+
+## create a summary table
+single_score = c(mean(DiscrScores$single_score[1:n2/2]), sd(DiscrScores$single_score[1:n2/2]),
+                 mean(DiscrScores$single_score[(n2/2+1):n2]), sd(DiscrScores$single_score[(n2/2+1):n2]))
+single_sparse_score = c(mean(DiscrScores$single_sparse_score[1:n2/2]), sd(DiscrScores$single_sparse_score[1:n2/2]),
+                 mean(DiscrScores$single_sparse_score[(n2/2+1):n2]), sd(DiscrScores$single_sparse_score[(n2/2+1):n2]))
+single_sparse_score2 = c(mean(DiscrScores2$single_sparse_score[1:n2/2]), sd(DiscrScores2$single_sparse_score[1:n2/2]),
+                 mean(DiscrScores2$single_sparse_score[(n2/2+1):n2]), sd(DiscrScores2$single_sparse_score[(n2/2+1):n2]))
+summy_stat = rbind(single_score, single_sparse_score, single_sparse_score2)
+
+### signal to noise ratio
+summy_stat = cbind(summy_stat, (summy_stat[,3]- summy_stat[,1])/(summy_stat[,2]+summy_stat[,4])/2/sqrt(4/n2))
+colnames(summy_stat) = c("mean0", "sd0", "mean1", "sd1", "SNR")
+rownames(summy_stat) = c("Using all genes",
+                         paste0("Sparse score 1 (", nrow(DiscrScores$multi_sparse_score), " genes)"),
+                         paste0("Sparse score 2 (", nrow(DiscrScores2$multi_sparse_score), " genes)"))
+
+kable(round(summy_stat, 3))
+
+```
+
+From the plots and tables, we see that both the one-dimensional overall and sparse scores have discriminant powers to separate the two gender groups, and the sparse score seems to have better signal-to-noise ration (SNR) than the overall score.  While sparse score 2 has slightly lower SNR compared with sparse score 1, it still has good discriminant power and can be a practical option (because it uses much fewer features) in real world applications.
+
+These 1-dimensional scores, as well as their multivariate counterparts (entries `multi_score` and `multi_sparse_score` in objects `DiscrScores` and `DiscrScores2`), can be used in linear or nonlinear machine learning algorithms to build the actual classifiers for the binary outcome.
+
+
+## Real data example
+
+To be written later based on the UR/JCVI collaboration on the RPRC data.
+

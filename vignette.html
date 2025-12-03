@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<meta name="author" content="Hao Sun, Xing Qiu" />
+
+<meta name="date" content="2025-06-15" />
+
+<title>FastMix User Guide</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">FastMix User Guide</h1>
+<h4 class="author">Hao Sun, Xing Qiu</h4>
+<h4 class="date">2025-06-15</h4>
+
+
+
+<p>In this Vignette, we describe the basic usage of the
+<code>FastMix</code> package. This package implements a fast parameter
+estimation and hypothesis testing framework for a special type of linear
+mixed effects model inspired by the deconvolution project. Below we
+describe the inspiring problem, the mathematical model, and the usage of
+the main R function, <code>FastMix()</code>.</p>
+<div id="introduction" class="section level2">
+<h2>Introduction</h2>
+<p>We will briefly describe a motivating problem for which the
+<code>FastMix</code> package is applicable.</p>
+<p>In most genomic studies, gene expressions are quantified from a
+mixture of heterogeneous cells. In certain cases, we may have matching
+phenotype data (often from flow-cytometry) which quantify the proportion
+of <span class="math inline">\(k=1, 2, \dots, K\)</span> types of cells
+in the sample. One popular task is to use the observed cell proportions
+to “deconvolute” the mixed gene expressions, namely, to obtain
+cell-specific gene expressions for each subject (henceforth denoted as
+<span class="math inline">\(b_{kij}\)</span>, for the <span class="math inline">\(k\)</span>th cell, <span class="math inline">\(i\)</span>th gene, <span class="math inline">\(j\)</span>th subject).</p>
+<p>In a sense, the need for producing <em>subject-specific</em>
+expressions is primarily driven by the downstream statistical analysis,
+in which <span class="math inline">\(b_{kij}\)</span> are considered as
+new observations to be associated with subject-specific clinical
+covariates, such as the disease severity, age, and sex.</p>
+<p>From the statistical perspective, the main difficulty of the above
+approach is that the deconvolution step is a typical “large <span class="math inline">\(p\)</span>, small <span class="math inline">\(n\)</span>” problem. For each gene, we have <span class="math inline">\(n\)</span> observations of the mixed gene
+expression; yet our goal is to produce <span class="math inline">\(Kn\)</span> estimates for each subject (<span class="math inline">\(i=1, 2, \dots, n\)</span>) and each type of cell
+(<span class="math inline">\(k=1, 2, \dots, K\)</span>). While it is
+theoretically doable based on certain penalized regression, the
+resulting cell-specific expressions will inevitably have high level of
+variance.</p>
+<p>In this study, we take a different approach, namely, to combine the
+deconvolution step with the downstream analysis into a
+<strong>single</strong> mixed effects model. The advantages of doing so
+are:</p>
+<ol style="list-style-type: decimal">
+<li>Cell-specific gene expressions are modeled as a mixture of fixed and
+random effects, so each subject (and each cell, each gene) can have a
+different estimate <span class="math inline">\(\hat{b}_{kij}\)</span>
+via EBLUP (empirical best linear unbiased predictor).</li>
+<li>The degrees of freedom (unknown parameters) of the above model is
+small. Specifically, subject-specific variation of <span class="math inline">\(\hat{b}_{kij}\)</span> is controlled by clinical
+covariates via a linear model.</li>
+<li>The primary inference is based on the interaction between the cell
+proportions and clinical covariates, which pools all subjects, so there
+is no “small <span class="math inline">\(n\)</span>, large <span class="math inline">\(p\)</span>” problem. The results will be a set of
+<span class="math inline">\(p\)</span>-values for each cell type and
+each clinical covariate.</li>
+<li>We also developed a novel gene prioritizing procedure based on the
+theory of outliers. More specifically, among all the predicted random
+effect terms (cell, covariate, and gene) for a fixed cell and covariate,
+we will be able to identify those genes that are significantly different
+from the majority of genes. The result will be a 3D tensor of <span class="math inline">\(p\)</span>-values for cell, covariate, and gene,
+as well as the the direction and magnitude of this random interaction
+term being greater than the average.</li>
+</ol>
+<p>In summary, we have designed a <strong>one-step</strong> inferential
+framework based on mixed effects regression and outlier analysis for the
+deconvolution analysis that greatly reduces the model complexity, yet
+still flexible enough to produce estimates of the association between
+the cell-specific gene expressions and clinical covariates, as well as
+their corresponding <span class="math inline">\(p\)</span>-values for
+each gene, cell, and covariate.</p>
+</div>
+<div id="mathematical-model" class="section level2">
+<h2>Mathematical model</h2>
+<p>Based on a simple additive model, <span class="math inline">\(Y_{ji}\)</span>, the expression level of the <span class="math inline">\(i\)</span>th gene, <span class="math inline">\(i=1, 2, \dots, m\)</span> for the <span class="math inline">\(j\)</span>th subject, <span class="math inline">\(j=1, 2, \dots, n\)</span>, can be described as</p>
+<p><span class="math display">\[Y_{ji} = \sum_{k=1}^{K} C_{jk} b_{kij} +
+\sum_{p=1}^{P} Z_{jp} d_{pi} + \epsilon_{ji}. \]</span></p>
+<p>Here <span class="math inline">\(C_{jk}\)</span> is the proportion of
+the <span class="math inline">\(k\)</span>th cell for the <span class="math inline">\(j\)</span>th subject (measured by e.g.,
+flow-cytometry); <span class="math inline">\(b_{kij}\)</span> is the
+expression of the <span class="math inline">\(i\)</span>th gene produced
+by one unit of <span class="math inline">\(k\)</span>th cell for the
+<span class="math inline">\(j\)</span>th subject; <span class="math inline">\(Z_{jp}\)</span> is the value of the <span class="math inline">\(p\)</span>th <strong>standardized</strong>
+clinical variable (such as age, sex, and severity; standardized so that
+all of them have mean zero and unit standard deviation therefore
+directly comparable) of the <span class="math inline">\(j\)</span>th
+subject; <span class="math inline">\(d_{pi}\)</span> is the association
+of the <span class="math inline">\(p\)</span>th clinical covariate to
+the <span class="math inline">\(i\)</span>th gene; and <span class="math inline">\(\epsilon_{ji}\)</span> is the error term. We
+further assume that the cell-specific expression, <span class="math inline">\(b_{kij}\)</span>, and covariate-specific
+association, <span class="math inline">\(d_{pi}\)</span>, have the
+following mixed effects structure</p>
+<p><span class="math display">\[ b_{kij} = b_{k} + u_{ki} +
+\sum_{p=1}^{P} Z_{jp} (a_{pk} + \alpha_{pki}), \qquad d_{pi} =
+\delta_{p} + e_{pi}. \]</span></p>
+<p>Here <span class="math inline">\(b_{k}\)</span> is the mean
+contribution to expression from the <span class="math inline">\(k\)</span>th cell to all genes; <span class="math inline">\(u_{ki}\)</span> is a random effect term specific
+to the <span class="math inline">\(i\)</span>th gene; <span class="math inline">\(a_{pk}\)</span> represents the mean (over all
+subjects and genes) association between <span class="math inline">\(Z_{jp}\)</span> and <span class="math inline">\(b_{kij}\)</span>; and <span class="math inline">\(\alpha_{pki}\)</span> is a random effect term that
+describes the association of <span class="math inline">\(Z_{jp}\)</span>
+and a specific gene; <span class="math inline">\(\delta_{p}\)</span> is
+the overall association of <span class="math inline">\(p\)</span> to all
+genes and <span class="math inline">\(e_{pi}\)</span> is a random effect
+that describes the association between the <span class="math inline">\(p\)</span>th covariate and the <span class="math inline">\(i\)</span>th gene.</p>
+<p>We may merge the first two equations and obtain the following
+<strong>combined model</strong></p>
+<p><span class="math display">\[ Y_{ji} = \sum_{l = 1}^{L} X_{jl} \left(
+\beta_{l} + \gamma_{li} \right) + \epsilon_{ji}. \]</span></p>
+<p>Here <span class="math inline">\(X_{\cdot, \cdot}\)</span> is the
+combined covariate matrix and it includes <span class="math inline">\(C_{jk}\)</span>, <span class="math inline">\(Z_{jp}\)</span>, and <span class="math inline">\(C_{jk} Z_{jp}\)</span>. For example, if we have
+three types of cells and two clinical covariates, the total number of
+covariates would be <span class="math inline">\(L = 3 + 2 + 3\times 2 =
+11\)</span>. <span class="math inline">\(\beta_{l}\)</span> is the
+contribution of <span class="math inline">\(X_{\cdot,l}\)</span> (could
+be <span class="math inline">\(C\)</span>, <span class="math inline">\(Z\)</span>, or their interaction) to the entire
+transcriptome, and <span class="math inline">\(\gamma_{li}\)</span> is
+the random effect term that characterizes the effect of <span class="math inline">\(X_{\cdot,l}\)</span> to a specific gene.</p>
+</div>
+<div id="computational-challenge-and-the-fast-lmer-algorithm" class="section level2">
+<h2>Computational challenge and the Fast LMER algorithm</h2>
+<p>The above model is a standard LMER so it can be fitted by a stock
+mixed effects regression software, such as R package <code>lme4</code>,
+the reference implementation of LMER in R. However, due to the
+high-throughput nature of the data, fitting such a large regression
+model is computationally very demanding. Furthermore, there are
+occasional convergence issues due to the use of the EM algorithm in
+<code>lme4</code> to the high-throughput data, which could do harm to
+the parameter estimation of interest. See the simulation studies in
+document <code>FAST_LMER_project.pdf</code>.</p>
+<p>Instead, we developed an efficient estimation framework based on an
+initial OLS regression, moment method, and the EBLUP. For
+high-throughput data, the proposed method achieves comparable accuracy
+with the EM-based LMER ï¬tting algorithm with only a fraction of
+computational time.</p>
+</div>
+<div id="the-outlier-detection-algorithm-for-the-predicted-random-effects" class="section level2">
+<h2>The outlier detection algorithm for the predicted random
+effects</h2>
+<p>In addition, we develop a novel competitive hypothesis test to
+identify genes that have signiï¬cantly larger or smaller predicted
+random eï¬ect with a given covariatewe. It means for a given <span class="math inline">\(l\)</span>, whether the estimated random effect
+for a specific gene (<span class="math inline">\(\gamma_{li}\)</span>)
+is significantly different from its “main distribution”. Specifically,
+we consider that the previous <strong>combined model</strong> only
+describes the distribution of the majority of genes; and there may be
+small subsets of genes that have different distribution of linear
+coefficients. In other words, if gene <span class="math inline">\(i\)</span> is in this subset, its linear
+coefficient associated some <span class="math inline">\(X_{\cdot
+l}\)</span> does <strong>not</strong> follow <span class="math inline">\(N(\beta_{l}, \sigma_{\gamma_{l}}^2)\)</span>, and
+could be detected as an <strong>outlier</strong> from the major
+distribution.</p>
+<p>The proposed outlier detection includes two steps: debias the
+covariance estimation of random effects caused by outliers and do z-test
+using weighted EBLUP . Step one is the core part and we briefly describe
+how to achieve it here: we first find the potential direction with
+outliers by a normal test of weighted EBLUP; we then construct a <span class="math inline">\(\chi^2\)</span>-type statistics from OLS
+estimation and trim the extreme values to do gene selection; lastly we
+recover the covariance estimation of random effects according to the
+proporty of trimmed <span class="math inline">\(\chi^2\)</span>-distribution. Technical details
+and simulation results are summarized in another document,
+<code>FAST_LMER_project.pdf</code>.</p>
+</div>
+<div id="usage-examples" class="section level2">
+<h2>Usage examples</h2>
+<p>The primary function in our package is <code>FastMix()</code>. It
+takes the following primary arguments: <code>GeneExp</code>,
+<code>CellProp</code>, <code>Clinical</code>, <code>random</code> and
+<code>robust</code>. Here <code>GeneExp</code> is a <span class="math inline">\(m\times n\)</span> dimensional gene expression
+matrix; <code>CellProp</code> is a <span class="math inline">\(n\times
+K\)</span> dimensional matrix of cell proportions; <code>Clinical</code>
+is a <span class="math inline">\(n\times P\)</span> dimensional matrix
+of clinical and demographic variables to be tested; <code>random</code>
+is an index vector that specifies which variable(s) requires random
+effects – by default, all covariates are paired with a random effect and
+<code>robust</code> specifies whether robust covariance estimation is
+implemented and which method to use: “FALSE” for non-robust estimation;
+“mcd” for the MCD algorithm of Rousseeuw and Van Driessen; “weighted”
+for the Reweighted MCD; “donostah” for the Donoho-Stahel projection
+based estimator; “pairwiseQC” for the orthogonalized quadrant
+correlation pairwise estimator. All these algorithms come from the R
+package <code>robust</code>. “FastMix” is the proposed trimming
+method.</p>
+</div>
+<div id="simulation" class="section level2">
+<h2>Simulation</h2>
+<p>We first generate a set of data, called <code>dat_train</code>, which
+contains <span class="math inline">\(m=5000\)</span> genes and <span class="math inline">\(n=50\)</span> subjects. There are three cell types
+and the data are stored in object <code>CellProp</code>. I created a
+clinical dataset called <code>Demo</code>, which consists of two
+variables, <code>Severity</code> and <code>Sex</code>. Based on the
+previous discussion, the observed bulk gene expression may be associated
+with a total of <span class="math inline">\(L=11\)</span> covariates: 3
+cell proportions, 2 clinical variables, and 6 of the interaction
+terms.</p>
+<p>I created true associations between the covariates and gene
+expressions in this way.</p>
+<ol style="list-style-type: decimal">
+<li>Cell1 has overall association with all gene expressions; Cell 2 and
+3 does not. Using previous notation, <span class="math inline">\(b_1 =
+1.5\)</span>, <span class="math inline">\(b_2 = 0\)</span>, <span class="math inline">\(b_3 = 0\)</span>.<br />
+</li>
+<li>The majority of the genes are associated with these cells with
+coefficients sampled from <span class="math inline">\(N(0,
+\sigma_{u}^{2})\)</span>, <span class="math inline">\(\sigma_{u} =
+1\)</span>.</li>
+<li>Neither Severity nor Sex has overall association with the entire
+transcriptome. The majority of their coefficients follow <span class="math inline">\(N(0, \sigma_{e}^{2})\)</span>, <span class="math inline">\(\sigma_{e} = 0.6\)</span>.</li>
+<li>The interaction between Cell1 and Severity has an overall impact on
+the transcriptome; the corresponding coefficients follows <span class="math inline">\(N(\beta_6, \sigma_{\alpha}^2)\)</span>, <span class="math inline">\(\beta_6 = 0.75\)</span>, <span class="math inline">\(\sigma_{\alpha} = 1.2\)</span>.</li>
+<li>All other interaction terms do not have overall association with the
+transcriptome. The majority of these 11 coefficients has correlation 0.
+We then choose 4 out of 11 covariates to assign outliers.</li>
+<li>The first 250 genes have strong association with Cell1, such that
+<span class="math inline">\(b_{1i} = b_{1} \pm 3 \times
+\sigma_{u}\)</span>, with equal probability of positive or negative
+shift. In other words, their linear coefficients are outliers w.r.t. the
+major distribution.</li>
+<li>The linear coefficients between Genes 251 - 500 and Severity are
+outliers created in the same way (<span class="math inline">\(\pm 3
+\times \sigma_{e}\)</span> units).</li>
+<li>The linear coefficients between Genes 501 - 750 and Cell2.Severity,
+and those between Genes 751 - 1000 and Cell2.Sex are outliers created in
+the same way (<span class="math inline">\(\pm 3 \times
+\sigma_{\alpha}\)</span> units).</li>
+<li>The variance of the noise, <span class="math inline">\(\sigma_{\epsilon}^2\)</span>, is 0.0625.</li>
+</ol>
+<div id="structure-of-simulated-data" class="section level3">
+<h3>Structure of Simulated Data</h3>
+<p>The aforementioned data is provided as <code>dat_train</code> in
+<code>dataexample.rda</code>, distributed along with this R package, to
+examplify the simulated data. <code>dat_train</code> is a list of three
+objects: (a) object <code>CellProp</code>, which stores the proportion
+of cell types for each subject with 50 rows and 3 columns; object
+<code>Demo</code>, a clinical dataset which consists of two variables,
+<code>Severity</code> and <code>Sex</code>, for each subjects with 50
+rows and 2 columns, and (c) object <code>GeneExp</code>, a matrix with
+5000 rows and 50 columns, stores the outcome of interest which consists
+of gene expression level with respect to subjects and genes. These three
+objects are required inputs for function <code>FastMix()</code>. Based
+on the previous discussion, the observed bulk gene expression may be
+associated with a total of <span class="math inline">\(L=11\)</span>
+covariates: 3 cell proportions, 2 clinical variables, and 6 of the
+interaction terms.</p>
+</div>
+<div id="using-fastmix-to-analyze-the-simulated-data" class="section level3">
+<h3>Using FastMix to analyze the simulated data</h3>
+<p>Below is the default way of using <code>FastMix</code> to analyze the
+simulated data</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(FastMix)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a><span class="fu">data</span>(dat_train)                       <span class="co">#loads the sample data</span></span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="co">#vignette(&quot;FastMix&quot;)                     #shows this vignette</span></span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a><span class="do">## fitting the gene expression data, cell proportions, and demographic</span></span>
+<span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a><span class="do">## data in one step. It takes about 10~15 seconds to finish computing</span></span>
+<span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a><span class="fu">system.time</span>(mod1 <span class="ot">&lt;-</span> <span class="fu">FastMix</span>(dat_train<span class="sc">$</span>GeneExp, dat_train<span class="sc">$</span>CellProp, dat_train<span class="sc">$</span>Demo, <span class="at">independent =</span> F))</span></code></pre></div>
+<pre><code>##    user  system elapsed 
+##   10.92    0.33   11.25</code></pre>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="do">### add this exmaple for later use: test score_func when &#39;include.demo = F&#39;</span></span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="fu">system.time</span>(mod1_F <span class="ot">&lt;-</span> <span class="fu">FastMix</span>(dat_train<span class="sc">$</span>GeneExp, dat_train<span class="sc">$</span>CellProp, dat_train<span class="sc">$</span>Demo, <span class="at">independent =</span> F, <span class="at">include.demo =</span> F))</span></code></pre></div>
+<pre><code>##    user  system elapsed 
+##    9.41    0.20    9.72</code></pre>
+<p>Now let us summarize the results. First, let us check the fixed
+effects (the overall association between the covariates, their
+interactions, and the transcriptome</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="do">## 1. The overall association between covariates (with interactions)</span></span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="do">## and the entire transcriptome. We know that Cell1 is significantly</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="do">## associated with all genes; and Cell1 has a significant interaction</span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="do">## with Severity (but not Sex). All other nine covariates are not</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="do">## significant.</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="fu">kable</span>(<span class="fu">round</span>(mod1<span class="sc">$</span>fixed.results, <span class="dv">4</span>))</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">betahat</th>
+<th align="right">tstat</th>
+<th align="right">p.value</th>
+<th align="right">p.adj</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Cell1</td>
+<td align="right">1.4434</td>
+<td align="right">25.4027</td>
+<td align="right">0.0000</td>
+<td align="right">0.0000</td>
+</tr>
+<tr class="even">
+<td align="left">Cell2</td>
+<td align="right">0.0026</td>
+<td align="right">0.0855</td>
+<td align="right">0.9323</td>
+<td align="right">0.9323</td>
+</tr>
+<tr class="odd">
+<td align="left">Cell3</td>
+<td align="right">0.0088</td>
+<td align="right">0.2964</td>
+<td align="right">0.7685</td>
+<td align="right">0.9323</td>
+</tr>
+<tr class="even">
+<td align="left">Severity</td>
+<td align="right">-0.0401</td>
+<td align="right">-1.1714</td>
+<td align="right">0.2487</td>
+<td align="right">0.8113</td>
+</tr>
+<tr class="odd">
+<td align="left">Sex</td>
+<td align="right">0.0056</td>
+<td align="right">0.3029</td>
+<td align="right">0.7636</td>
+<td align="right">0.9323</td>
+</tr>
+<tr class="even">
+<td align="left">Cell1.Severity</td>
+<td align="right">0.7298</td>
+<td align="right">19.4722</td>
+<td align="right">0.0000</td>
+<td align="right">0.0000</td>
+</tr>
+<tr class="odd">
+<td align="left">Cell2.Severity</td>
+<td align="right">0.0624</td>
+<td align="right">0.8309</td>
+<td align="right">0.4112</td>
+<td align="right">0.9047</td>
+</tr>
+<tr class="even">
+<td align="left">Cell3.Severity</td>
+<td align="right">0.0038</td>
+<td align="right">0.0959</td>
+<td align="right">0.9241</td>
+<td align="right">0.9323</td>
+</tr>
+<tr class="odd">
+<td align="left">Cell1.Sex</td>
+<td align="right">0.0392</td>
+<td align="right">1.0618</td>
+<td align="right">0.2950</td>
+<td align="right">0.8113</td>
+</tr>
+<tr class="even">
+<td align="left">Cell2.Sex</td>
+<td align="right">-0.0448</td>
+<td align="right">-0.6288</td>
+<td align="right">0.5333</td>
+<td align="right">0.9323</td>
+</tr>
+<tr class="odd">
+<td align="left">Cell3.Sex</td>
+<td align="right">-0.0156</td>
+<td align="right">-0.3935</td>
+<td align="right">0.6961</td>
+<td align="right">0.9323</td>
+</tr>
+</tbody>
+</table>
+<p>As we can see, FastMix correctly identified the only two truly
+significant covariates (Cell1 and the interaction between Cell1 and
+Severity).</p>
+<p>Next, we check the statistical power and type I error rate for the
+random effects.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a><span class="do">## (a) The first 250 genes have significant association with Cell1,</span></span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="do">## (b) genes 251-500 has significant association with Severity, (c)</span></span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="do">## genes 501 - 750 are significantly associated with Cell2.Severity,</span></span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="do">## and (d) genes 751 - 1000 are significantly associated with Cell2.Sex.</span></span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a>m <span class="ot">&lt;-</span> <span class="fu">nrow</span>(dat_train<span class="sc">$</span>GeneExp)</span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a>n <span class="ot">=</span> <span class="fu">nrow</span>(dat_train<span class="sc">$</span>Demo)</span>
+<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a>rr.cell1 <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="dv">1</span><span class="sc">:</span><span class="dv">250</span>, <span class="st">&quot;Cell1&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a>              <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="dv">251</span><span class="sc">:</span>m, <span class="st">&quot;Cell1&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a>rr.severity <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="dv">251</span><span class="sc">:</span><span class="dv">500</span>, <span class="st">&quot;Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">250</span>, <span class="dv">501</span><span class="sc">:</span>m), <span class="st">&quot;Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb6-11"><a href="#cb6-11" tabindex="-1"></a>rr.cell2.severity <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="dv">501</span><span class="sc">:</span><span class="dv">750</span>, <span class="st">&quot;Cell2.Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb6-12"><a href="#cb6-12" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">500</span>, <span class="dv">751</span><span class="sc">:</span>m), <span class="st">&quot;Cell2.Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb6-13"><a href="#cb6-13" tabindex="-1"></a>rr.cell2.sex <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="dv">751</span><span class="sc">:</span><span class="dv">1000</span>, <span class="st">&quot;Cell2.Sex&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb6-14"><a href="#cb6-14" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">750</span>, <span class="dv">1001</span><span class="sc">:</span>m), <span class="st">&quot;Cell2.Sex&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb6-15"><a href="#cb6-15" tabindex="-1"></a>rr.others <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="cn">NA</span>, <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod1<span class="sc">$</span>re.ind.pvalue[, <span class="sc">-</span><span class="fu">c</span>(<span class="dv">1</span>,<span class="dv">4</span>,<span class="dv">10</span>)]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="sc">*</span><span class="dv">8</span>))</span>
+<span id="cb6-16"><a href="#cb6-16" tabindex="-1"></a>retab <span class="ot">&lt;-</span> <span class="fu">cbind</span>(<span class="at">Cell1=</span>rr.cell1, <span class="at">Severity=</span>rr.severity, <span class="at">Cell2.Severity=</span>rr.cell2.severity,</span>
+<span id="cb6-17"><a href="#cb6-17" tabindex="-1"></a>               <span class="at">Cell2.Sex=</span>rr.cell2.sex, <span class="at">Others=</span>rr.others)</span>
+<span id="cb6-18"><a href="#cb6-18" tabindex="-1"></a></span>
+<span id="cb6-19"><a href="#cb6-19" tabindex="-1"></a><span class="fu">kable</span>(<span class="fu">round</span>(retab, <span class="dv">3</span>))</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">Cell1</th>
+<th align="right">Severity</th>
+<th align="right">Cell2.Severity</th>
+<th align="right">Cell2.Sex</th>
+<th align="right">Others</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Power</td>
+<td align="right">0.672</td>
+<td align="right">0.672</td>
+<td align="right">0.592</td>
+<td align="right">0.612</td>
+<td align="right">NA</td>
+</tr>
+<tr class="even">
+<td align="left">TypeI.Err</td>
+<td align="right">0.032</td>
+<td align="right">0.036</td>
+<td align="right">0.037</td>
+<td align="right">0.035</td>
+<td align="right">0.052</td>
+</tr>
+</tbody>
+</table>
+<p>Judging from the above table, we see that for all covariates, the
+type I error is controlled at the nominal level. We also noticed that
+for all covariates, we have relatively good power to detect
+gene-specific associations between the covariates, including the
+interactions between cell proportion, clinical variables, and gene
+expressions.</p>
+</div>
+<div id="extention-to-weighted-samples." class="section level3">
+<h3>Extention to weighted samples.</h3>
+<p>In many applications, the noise may not be i.i.d. One such example is
+that samples in the study may have different Total Number of Mapped
+Reads (TNMR, a.k.a. sequencing depths). This information is typically
+provided by the researchers as a quality metric, and can be considered
+as <strong>inversely proportional</strong> to the variance of the
+(properly normalized) expression levels in a sample. In this case, we
+argue that using weights that are <strong>proportional to</strong> the
+TNMR will give us better results than a comparable model that treats all
+samples as equal.</p>
+<p>In this section, we consider the following simulation study:</p>
+<ol style="list-style-type: decimal">
+<li>All subjects are independent, but are not identically distributed.
+The variance of the <span class="math inline">\(j\)</span>th sample is
+considered as <span class="math inline">\(1/\mathrm{TNMR}_{j}\)</span>,
+where <span class="math inline">\(\mathrm{TNMR}_{j}\)</span> is
+generated from a uniform distribution <span class="math inline">\(U(1,
+5)\)</span> (reads in millions).</li>
+<li>We apply both the weighted FastMix model and the unweighted FastMix
+model to this set of data. The results are summarized in the following
+two tables.</li>
+</ol>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">1234</span>)</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a></span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a><span class="do">## Total number of mapped reads, a.k.a., sequencing depth, in millions.</span></span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>TNMR <span class="ot">&lt;-</span> <span class="fu">runif</span>(<span class="dv">50</span>, <span class="at">min=</span><span class="dv">1</span>, <span class="at">max=</span><span class="dv">5</span>)</span>
+<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a></span>
+<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a><span class="do">## We assume that the variance is proportional to TNMR for</span></span>
+<span id="cb7-7"><a href="#cb7-7" tabindex="-1"></a><span class="do">## normalized expressions</span></span>
+<span id="cb7-8"><a href="#cb7-8" tabindex="-1"></a><span class="do">## we use sd = 1 as the baseline</span></span>
+<span id="cb7-9"><a href="#cb7-9" tabindex="-1"></a>cov_matrix <span class="ot">&lt;-</span> <span class="fu">diag</span>(<span class="fu">max</span>(TNMR)<span class="sc">/</span>TNMR)</span>
+<span id="cb7-10"><a href="#cb7-10" tabindex="-1"></a><span class="do">### we generate a weighted data</span></span>
+<span id="cb7-11"><a href="#cb7-11" tabindex="-1"></a>dat <span class="ot">=</span> <span class="fu">data_gen</span>(m, n, <span class="at">seed =</span> <span class="dv">1</span>, <span class="at">outlier =</span> T, <span class="at">cor =</span> <span class="fl">0.5</span>, <span class="at">balance =</span> F, <span class="at">weight =</span> cov_matrix)</span>
+<span id="cb7-12"><a href="#cb7-12" tabindex="-1"></a></span>
+<span id="cb7-13"><a href="#cb7-13" tabindex="-1"></a><span class="fu">system.time</span>(mod2 <span class="ot">&lt;-</span> <span class="fu">FastMix</span>(dat<span class="sc">$</span>GeneExp, dat<span class="sc">$</span>CellProp, dat<span class="sc">$</span>Demo, <span class="at">independent =</span> F, <span class="at">cov_matrix =</span> cov_matrix))</span></code></pre></div>
+<p>user system elapsed 9.69 0.19 9.90</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>rr.cell1 <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="dv">1</span><span class="sc">:</span><span class="dv">250</span>, <span class="st">&quot;Cell1&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>              <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="dv">251</span><span class="sc">:</span>m, <span class="st">&quot;Cell1&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>rr.severity <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="dv">251</span><span class="sc">:</span><span class="dv">500</span>, <span class="st">&quot;Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">250</span>, <span class="dv">501</span><span class="sc">:</span>m), <span class="st">&quot;Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>rr.cell2.severity <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="dv">501</span><span class="sc">:</span><span class="dv">750</span>, <span class="st">&quot;Cell2.Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">500</span>, <span class="dv">751</span><span class="sc">:</span>m), <span class="st">&quot;Cell2.Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a>rr.cell2.sex <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="dv">751</span><span class="sc">:</span><span class="dv">1000</span>, <span class="st">&quot;Cell2.Sex&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">750</span>, <span class="dv">1001</span><span class="sc">:</span>m), <span class="st">&quot;Cell2.Sex&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a>rr.others <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="cn">NA</span>, <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod2<span class="sc">$</span>re.ind.pvalue[, <span class="sc">-</span><span class="fu">c</span>(<span class="dv">1</span>,<span class="dv">4</span>,<span class="dv">10</span>)]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="sc">*</span><span class="dv">8</span>))</span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a>retab <span class="ot">&lt;-</span> <span class="fu">cbind</span>(<span class="at">Cell1=</span>rr.cell1, <span class="at">Severity=</span>rr.severity, <span class="at">Cell2.Severity=</span>rr.cell2.severity,</span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a>               <span class="at">Cell2.Sex=</span>rr.cell2.sex, <span class="at">Others=</span>rr.others)</span>
+<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a></span>
+<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a><span class="fu">kable</span>(<span class="fu">round</span>(retab, <span class="dv">3</span>))</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">Cell1</th>
+<th align="right">Severity</th>
+<th align="right">Cell2.Severity</th>
+<th align="right">Cell2.Sex</th>
+<th align="right">Others</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Power</td>
+<td align="right">0.660</td>
+<td align="right">0.676</td>
+<td align="right">0.588</td>
+<td align="right">0.552</td>
+<td align="right">NA</td>
+</tr>
+<tr class="even">
+<td align="left">TypeI.Err</td>
+<td align="right">0.033</td>
+<td align="right">0.055</td>
+<td align="right">0.051</td>
+<td align="right">0.036</td>
+<td align="right">0.056</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">1234</span>)</span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a><span class="fu">system.time</span>(mod3 <span class="ot">&lt;-</span> <span class="fu">FastMix</span>(dat<span class="sc">$</span>GeneExp, dat<span class="sc">$</span>CellProp, dat<span class="sc">$</span>Demo, <span class="at">independent =</span> F, <span class="at">cov_matrix =</span> <span class="cn">NULL</span>))</span></code></pre></div>
+<p>user system elapsed 9.55 0.17 9.77</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a>rr.cell1 <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="dv">1</span><span class="sc">:</span><span class="dv">250</span>, <span class="st">&quot;Cell1&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a>              <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="dv">251</span><span class="sc">:</span>m, <span class="st">&quot;Cell1&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>rr.severity <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="dv">251</span><span class="sc">:</span><span class="dv">500</span>, <span class="st">&quot;Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">250</span>, <span class="dv">501</span><span class="sc">:</span>m), <span class="st">&quot;Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a>rr.cell2.severity <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="dv">501</span><span class="sc">:</span><span class="dv">750</span>, <span class="st">&quot;Cell2.Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">500</span>, <span class="dv">751</span><span class="sc">:</span>m), <span class="st">&quot;Cell2.Severity&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a>rr.cell2.sex <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="dv">751</span><span class="sc">:</span><span class="dv">1000</span>, <span class="st">&quot;Cell2.Sex&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span><span class="dv">250</span>,</span>
+<span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a>                 <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">750</span>, <span class="dv">1001</span><span class="sc">:</span>m), <span class="st">&quot;Cell2.Sex&quot;</span>]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="dv">-250</span>))</span>
+<span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a>rr.others <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">Power=</span><span class="cn">NA</span>, <span class="at">TypeI.Err=</span><span class="fu">sum</span>(mod3<span class="sc">$</span>re.ind.pvalue[, <span class="sc">-</span><span class="fu">c</span>(<span class="dv">1</span>,<span class="dv">4</span>,<span class="dv">10</span>)]<span class="sc">&lt;</span><span class="fl">0.05</span>)<span class="sc">/</span>(m<span class="sc">*</span><span class="dv">8</span>))</span>
+<span id="cb10-10"><a href="#cb10-10" tabindex="-1"></a>retab3 <span class="ot">&lt;-</span> <span class="fu">cbind</span>(<span class="at">Cell1=</span>rr.cell1, <span class="at">Severity=</span>rr.severity, <span class="at">Cell2.Severity=</span>rr.cell2.severity,</span>
+<span id="cb10-11"><a href="#cb10-11" tabindex="-1"></a>               <span class="at">Cell2.Sex=</span>rr.cell2.sex, <span class="at">Others=</span>rr.others)</span>
+<span id="cb10-12"><a href="#cb10-12" tabindex="-1"></a></span>
+<span id="cb10-13"><a href="#cb10-13" tabindex="-1"></a><span class="fu">kable</span>(<span class="fu">round</span>(retab3, <span class="dv">3</span>))</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">Cell1</th>
+<th align="right">Severity</th>
+<th align="right">Cell2.Severity</th>
+<th align="right">Cell2.Sex</th>
+<th align="right">Others</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Power</td>
+<td align="right">0.480</td>
+<td align="right">0.488</td>
+<td align="right">0.408</td>
+<td align="right">0.408</td>
+<td align="right">NA</td>
+</tr>
+<tr class="even">
+<td align="left">TypeI.Err</td>
+<td align="right">0.023</td>
+<td align="right">0.008</td>
+<td align="right">0.036</td>
+<td align="right">0.033</td>
+<td align="right">0.039</td>
+</tr>
+</tbody>
+</table>
+<p>The first table shows the results using sample-specific weights while
+the second table shows the results without sample-specific weights. We
+see that for all five covariates, the type I error is controlled at the
+nominal level for both methods.</p>
+<p>When weights are used, we have relatively higher power to detect
+gene-specific associations between the covariates, especially for the
+interactions between cell proportion, clinical variables, and gene
+expressions.</p>
+<p>Note that in our implementation of the weighted FastMix model, we can
+specify a much general covariance structure that could include both
+heterogeneous variances (as shown in the above example) and
+<strong>correlation</strong> among samples, possibly due to serial
+correlation in a longitudinal study. Howver, as of now, we require that
+such correlation is known (or estimable from the data). Please see [Yun
+and Xing 2019 BMC Bioinformatics] for a moment-based method for
+estimating such complex covariance structure. Also please see our
+current paper for more technical details of the weighted FastMix
+method.</p>
+</div>
+<div id="discriminant-analysis-based-on-the-fastmix-model" class="section level3">
+<h3>Discriminant analysis based on the FastMix model</h3>
+<p>In this section, we will present an example that uses the FastMix
+model to conduct a discriminant analysis for a specified binary outcome,
+such as the <code>Severity</code> variable stored in our simulated data,
+<code>dat_train</code>. Please see our paper for technical details of
+our approaches.</p>
+<p>As in any practical discriminant analysis, models developed from a
+training dataset (<code>dat_train</code> in this example) should be
+validated on an independent testing data set. To this end, we generate
+such a test data set, with the same simulation settings as
+<code>dat_train</code> and a larger sample size (<span class="math inline">\(n=200\)</span>), and name it as
+<code>dat_test</code>.</p>
+<p>Due to technical reasons, the test dataset needs to be pre-processed
+before model development. This can be done by calling function
+<code>DataPrep_test()</code>, and the results are designated as
+<code>Data_1</code> and <code>Data_0</code>. We need to provide with
+<code>DataPrep_test()</code> the index of the binary outcome to be
+classified in the original data, such as <code>Sex</code> in our
+example. After this processing step, <code>DataPrep_test()</code> will
+automatically rename it as <code>Res</code> (stands for “Response”), and
+all the other covariates as <code>Var1</code>, <code>Var2</code>, etc.
+Note that by construction, the <code>Res</code> variable in these sets
+will be constants across all subjects with opposite signs.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a><span class="co">#================================================================================#</span></span>
+<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a><span class="co">#================= step 1: prepare the test data set  ===========================#</span></span>
+<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a><span class="co">#================================================================================#</span></span>
+<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a><span class="do">### this step cannot be wrap into the score function because we need</span></span>
+<span id="cb11-6"><a href="#cb11-6" tabindex="-1"></a><span class="do">### to check the Data2 to find the index</span></span>
+<span id="cb11-7"><a href="#cb11-7" tabindex="-1"></a></span>
+<span id="cb11-8"><a href="#cb11-8" tabindex="-1"></a><span class="do">## number of subjects in the test data</span></span>
+<span id="cb11-9"><a href="#cb11-9" tabindex="-1"></a>n2 <span class="ot">&lt;-</span> <span class="dv">200</span></span>
+<span id="cb11-10"><a href="#cb11-10" tabindex="-1"></a>gnames <span class="ot">&lt;-</span> <span class="fu">rownames</span>(dat_test<span class="sc">$</span>GeneExp); m <span class="ot">&lt;-</span> <span class="fu">nrow</span>(dat_test<span class="sc">$</span>GeneExp)</span>
+<span id="cb11-11"><a href="#cb11-11" tabindex="-1"></a><span class="cf">if</span> (<span class="fu">is.null</span>(gnames)) {</span>
+<span id="cb11-12"><a href="#cb11-12" tabindex="-1"></a>  <span class="fu">rownames</span>(dat_test<span class="sc">$</span>GeneExp) <span class="ot">&lt;-</span> gnames <span class="ot">&lt;-</span> <span class="fu">paste0</span>(<span class="st">&quot;Gene&quot;</span>, <span class="dv">1</span><span class="sc">:</span>m)</span>
+<span id="cb11-13"><a href="#cb11-13" tabindex="-1"></a>}</span>
+<span id="cb11-14"><a href="#cb11-14" tabindex="-1"></a></span>
+<span id="cb11-15"><a href="#cb11-15" tabindex="-1"></a><span class="do">### In reality, we do not know the true response status of the testing</span></span>
+<span id="cb11-16"><a href="#cb11-16" tabindex="-1"></a><span class="do">### data. However, we need to create a &quot;Response&quot; for these subjects</span></span>
+<span id="cb11-17"><a href="#cb11-17" tabindex="-1"></a><span class="do">### in order to do a proper standardization for the covariates.  These</span></span>
+<span id="cb11-18"><a href="#cb11-18" tabindex="-1"></a><span class="do">### two sets of data are standardized according to two different</span></span>
+<span id="cb11-19"><a href="#cb11-19" tabindex="-1"></a><span class="do">### &quot;hypothetical&quot; responses: Response==0 (Data_0), Response==1</span></span>
+<span id="cb11-20"><a href="#cb11-20" tabindex="-1"></a><span class="do">### (Data_1).</span></span>
+<span id="cb11-21"><a href="#cb11-21" tabindex="-1"></a></span>
+<span id="cb11-22"><a href="#cb11-22" tabindex="-1"></a><span class="do">### this code use the data in csSAM simulation. The difference is that Demo only includes response </span></span>
+<span id="cb11-23"><a href="#cb11-23" tabindex="-1"></a><span class="co">#test_data = DataPrep_test(dat_test$GeneExp, dat_test$CellProp, Demo=NULL, train_response = dat$Demo, include.demo=TRUE, w)</span></span>
+<span id="cb11-24"><a href="#cb11-24" tabindex="-1"></a></span>
+<span id="cb11-25"><a href="#cb11-25" tabindex="-1"></a><span class="do">### this code use the data in main simulation. The difference is that Demo includes other variable than response </span></span>
+<span id="cb11-26"><a href="#cb11-26" tabindex="-1"></a>test_data <span class="ot">=</span> <span class="fu">DataPrep_test</span>(dat_test<span class="sc">$</span>GeneExp, dat_test<span class="sc">$</span>CellProp, <span class="at">Demo=</span>dat_test<span class="sc">$</span>Demo[,<span class="dv">1</span>], </span>
+<span id="cb11-27"><a href="#cb11-27" tabindex="-1"></a>                          <span class="at">train_Demo =</span> dat_train<span class="sc">$</span>Demo[,<span class="dv">1</span>], <span class="at">train_response =</span> dat_train<span class="sc">$</span>Demo[,<span class="dv">2</span>], <span class="at">include.demo=</span><span class="cn">TRUE</span>)</span>
+<span id="cb11-28"><a href="#cb11-28" tabindex="-1"></a></span>
+<span id="cb11-29"><a href="#cb11-29" tabindex="-1"></a><span class="do">### here, we show an exmaple of test data set with include_demo = FALSE</span></span>
+<span id="cb11-30"><a href="#cb11-30" tabindex="-1"></a>test_data_F <span class="ot">=</span> <span class="fu">DataPrep_test</span>(dat_test<span class="sc">$</span>GeneExp, dat_test<span class="sc">$</span>CellProp, <span class="at">Demo=</span>dat_test<span class="sc">$</span>Demo[,<span class="dv">1</span>], </span>
+<span id="cb11-31"><a href="#cb11-31" tabindex="-1"></a>                            <span class="at">train_Demo =</span> dat_train<span class="sc">$</span>Demo[,<span class="dv">1</span>], <span class="at">train_response =</span> dat_train<span class="sc">$</span>Demo[,<span class="dv">2</span>], <span class="at">include.demo=</span><span class="cn">FALSE</span>)</span>
+<span id="cb11-32"><a href="#cb11-32" tabindex="-1"></a></span>
+<span id="cb11-33"><a href="#cb11-33" tabindex="-1"></a>Data_0 <span class="ot">=</span> test_data<span class="sc">$</span>Data_0</span>
+<span id="cb11-34"><a href="#cb11-34" tabindex="-1"></a>Data_1 <span class="ot">=</span> test_data<span class="sc">$</span>Data_1</span>
+<span id="cb11-35"><a href="#cb11-35" tabindex="-1"></a></span>
+<span id="cb11-36"><a href="#cb11-36" tabindex="-1"></a>Data_0_F <span class="ot">=</span> test_data_F<span class="sc">$</span>Data_0</span>
+<span id="cb11-37"><a href="#cb11-37" tabindex="-1"></a>Data_1_F <span class="ot">=</span> test_data_F<span class="sc">$</span>Data_1</span>
+<span id="cb11-38"><a href="#cb11-38" tabindex="-1"></a><span class="co"># Due to the way we assign hypothetical Response values, all entries</span></span>
+<span id="cb11-39"><a href="#cb11-39" tabindex="-1"></a><span class="co"># in Data_0 has &quot;Response==0&quot;, and all entries in Data_0 has</span></span>
+<span id="cb11-40"><a href="#cb11-40" tabindex="-1"></a><span class="co"># one. Therefore, we expect the standardized Response from these two</span></span>
+<span id="cb11-41"><a href="#cb11-41" tabindex="-1"></a><span class="co"># datasets: (a) are the same for all entries within one dataset; (b)</span></span>
+<span id="cb11-42"><a href="#cb11-42" tabindex="-1"></a><span class="co"># have exactly the opposite sign between these two datasets.</span></span>
+<span id="cb11-43"><a href="#cb11-43" tabindex="-1"></a></span>
+<span id="cb11-44"><a href="#cb11-44" tabindex="-1"></a><span class="fu">round</span>(<span class="fu">head</span>(Data_1<span class="sc">$</span>X[,<span class="st">&quot;Res&quot;</span>]),<span class="dv">4</span>)</span></code></pre></div>
+<p>[1] 0.9899 0.9899 0.9899 0.9899 0.9899 0.9899</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a><span class="fu">round</span>(<span class="fu">head</span>(Data_0<span class="sc">$</span>X[,<span class="st">&quot;Res&quot;</span>]),<span class="dv">4</span>)</span></code></pre></div>
+<p>[1] -0.9899 -0.9899 -0.9899 -0.9899 -0.9899 -0.9899</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a><span class="do">###when include.demo=FALSE, try the following code</span></span>
+<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a><span class="fu">round</span>(<span class="fu">head</span>(Data_1_F<span class="sc">$</span>X[,<span class="st">&quot;Cell1.Res&quot;</span>]),<span class="dv">4</span>)</span></code></pre></div>
+<p>[1] 0.2163 0.2675 0.2547 0.2146 0.2914 0.2914</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="fu">round</span>(<span class="fu">head</span>(Data_0_F<span class="sc">$</span>X[,<span class="st">&quot;Cell1.Res&quot;</span>]),<span class="dv">4</span>)</span></code></pre></div>
+<p>[1] -0.2163 -0.2675 -0.2547 -0.2146 -0.2914 -0.2914</p>
+<p>Note that we must let the scoring function know that which variable
+in the testing data is the binary outcome to be classified (function
+<code>DataPrep_test()</code> automatically renames this variable as
+<code>Res</code> in the processed data, and renames all other covariates
+as <code>Vari</code>, <span class="math inline">\(i=1,2,\dots\)</span>),
+and which variables are the interactions between <code>Res</code> and
+cell proportions.</p>
+<p>By checking the first few rows of the processed data, we find that
+the <span class="math inline">\(5\)</span>th column is the binary
+response variable, and the <span class="math inline">\(9, 10,
+11\)</span>th columns are the interaction terms between the response and
+cell proportions. This information will be used in
+<code>score_func()</code> to produce several discriminant scores. the
+<code>single_score</code> (one dimensional) and <code>multi_score</code>
+(5,000-dimensional) are computed from <em>all genes</em> based on the
+theory of linear discriminant analysis; <code>single_sparse_score</code>
+(one dimensional) and <code>multi_sparse_score</code> are linear
+combinations of genes with significant interactions with the response
+variable.</p>
+<p>Note that by selecting a more stringent significant level (via the
+<code>sig.level</code> parameter in <code>score_func()</code>) in
+<code>DiscrScores2</code>, we obtain a sparse discriminant score based
+on much <strong>fewer</strong> genes.</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a><span class="co">#================================================================================#</span></span>
+<span id="cb15-2"><a href="#cb15-2" tabindex="-1"></a><span class="co">#=============== step 3: clacluate the scores for classification ================#</span></span>
+<span id="cb15-3"><a href="#cb15-3" tabindex="-1"></a><span class="co">#================================================================================#</span></span>
+<span id="cb15-4"><a href="#cb15-4" tabindex="-1"></a></span>
+<span id="cb15-5"><a href="#cb15-5" tabindex="-1"></a><span class="co"># we can overview the data to find some useful index for the score</span></span>
+<span id="cb15-6"><a href="#cb15-6" tabindex="-1"></a><span class="co"># calculation. In this example, the &#39;Res&#39; variable is the 5th column;</span></span>
+<span id="cb15-7"><a href="#cb15-7" tabindex="-1"></a><span class="co"># and the 9,10,11th columns are the interaction terms needed for</span></span>
+<span id="cb15-8"><a href="#cb15-8" tabindex="-1"></a><span class="co"># building the discriminant score.</span></span>
+<span id="cb15-9"><a href="#cb15-9" tabindex="-1"></a></span>
+<span id="cb15-10"><a href="#cb15-10" tabindex="-1"></a><span class="fu">kable</span>(<span class="fu">round</span>(<span class="fu">head</span>(Data_0<span class="sc">$</span>X),<span class="dv">2</span>))</span></code></pre></div>
+<table style="width:100%;">
+<colgroup>
+<col width="3%" />
+<col width="6%" />
+<col width="6%" />
+<col width="6%" />
+<col width="6%" />
+<col width="6%" />
+<col width="11%" />
+<col width="11%" />
+<col width="11%" />
+<col width="10%" />
+<col width="10%" />
+<col width="10%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="right">ID</th>
+<th align="right">Cell1</th>
+<th align="right">Cell2</th>
+<th align="right">Cell3</th>
+<th align="right">Var1</th>
+<th align="right">Res</th>
+<th align="right">Cell1.Var1</th>
+<th align="right">Cell2.Var1</th>
+<th align="right">Cell3.Var1</th>
+<th align="right">Cell1.Res</th>
+<th align="right">Cell2.Res</th>
+<th align="right">Cell3.Res</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">1</td>
+<td align="right">0.22</td>
+<td align="right">0.29</td>
+<td align="right">0.26</td>
+<td align="right">-0.58</td>
+<td align="right">-0.99</td>
+<td align="right">-0.13</td>
+<td align="right">-0.17</td>
+<td align="right">-0.15</td>
+<td align="right">-0.22</td>
+<td align="right">-0.28</td>
+<td align="right">-0.26</td>
+</tr>
+<tr class="even">
+<td align="right">1</td>
+<td align="right">0.27</td>
+<td align="right">0.26</td>
+<td align="right">0.26</td>
+<td align="right">-1.66</td>
+<td align="right">-0.99</td>
+<td align="right">-0.45</td>
+<td align="right">-0.44</td>
+<td align="right">-0.43</td>
+<td align="right">-0.27</td>
+<td align="right">-0.26</td>
+<td align="right">-0.25</td>
+</tr>
+<tr class="odd">
+<td align="right">1</td>
+<td align="right">0.26</td>
+<td align="right">0.26</td>
+<td align="right">0.22</td>
+<td align="right">-0.58</td>
+<td align="right">-0.99</td>
+<td align="right">-0.15</td>
+<td align="right">-0.15</td>
+<td align="right">-0.12</td>
+<td align="right">-0.25</td>
+<td align="right">-0.26</td>
+<td align="right">-0.21</td>
+</tr>
+<tr class="even">
+<td align="right">1</td>
+<td align="right">0.22</td>
+<td align="right">0.30</td>
+<td align="right">0.20</td>
+<td align="right">-1.18</td>
+<td align="right">-0.99</td>
+<td align="right">-0.25</td>
+<td align="right">-0.35</td>
+<td align="right">-0.24</td>
+<td align="right">-0.21</td>
+<td align="right">-0.29</td>
+<td align="right">-0.20</td>
+</tr>
+<tr class="odd">
+<td align="right">1</td>
+<td align="right">0.29</td>
+<td align="right">0.24</td>
+<td align="right">0.30</td>
+<td align="right">1.03</td>
+<td align="right">-0.99</td>
+<td align="right">0.30</td>
+<td align="right">0.24</td>
+<td align="right">0.31</td>
+<td align="right">-0.29</td>
+<td align="right">-0.24</td>
+<td align="right">-0.30</td>
+</tr>
+<tr class="even">
+<td align="right">1</td>
+<td align="right">0.29</td>
+<td align="right">0.28</td>
+<td align="right">0.28</td>
+<td align="right">-1.47</td>
+<td align="right">-0.99</td>
+<td align="right">-0.43</td>
+<td align="right">-0.42</td>
+<td align="right">-0.42</td>
+<td align="right">-0.29</td>
+<td align="right">-0.28</td>
+<td align="right">-0.28</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb16"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" tabindex="-1"></a><span class="do">### the predicted score using main data set</span></span>
+<span id="cb16-2"><a href="#cb16-2" tabindex="-1"></a>DiscrScores <span class="ot">=</span> <span class="fu">score_func</span>(<span class="at">mod1=</span>mod1, Data_0, Data_1, <span class="at">Response_interaction_index =</span> <span class="fu">c</span>(<span class="dv">9</span>,<span class="dv">10</span>,<span class="dv">11</span>), <span class="at">Response_idx=</span><span class="dv">5</span>)</span>
+<span id="cb16-3"><a href="#cb16-3" tabindex="-1"></a></span>
+<span id="cb16-4"><a href="#cb16-4" tabindex="-1"></a><span class="do">###this example shows how to use the score function with include_demo = FALSE</span></span>
+<span id="cb16-5"><a href="#cb16-5" tabindex="-1"></a>DiscrScores_F <span class="ot">=</span> <span class="fu">score_func</span>(<span class="at">mod1=</span>mod1_F, Data_0_F, Data_1_F, <span class="at">Response_interaction_index =</span> <span class="fu">c</span>(<span class="dv">7</span>,<span class="dv">8</span>,<span class="dv">9</span>), <span class="at">Response_idx=</span><span class="cn">NULL</span>)</span>
+<span id="cb16-6"><a href="#cb16-6" tabindex="-1"></a><span class="do">## we can use a more stringent significant level to select fewer</span></span>
+<span id="cb16-7"><a href="#cb16-7" tabindex="-1"></a><span class="do">## features in the sparse discriminant score</span></span>
+<span id="cb16-8"><a href="#cb16-8" tabindex="-1"></a>DiscrScores2 <span class="ot">=</span> <span class="fu">score_func</span>(<span class="at">mod1=</span>mod1, Data_0, Data_1, <span class="at">Response_interaction_index =</span> <span class="fu">c</span>(<span class="dv">9</span>,<span class="dv">10</span>,<span class="dv">11</span>), <span class="at">Response_idx=</span><span class="dv">5</span>, <span class="at">sig.level=</span><span class="fl">0.005</span>)</span>
+<span id="cb16-9"><a href="#cb16-9" tabindex="-1"></a></span>
+<span id="cb16-10"><a href="#cb16-10" tabindex="-1"></a><span class="do">## check the number of selected sig. interaction genes</span></span>
+<span id="cb16-11"><a href="#cb16-11" tabindex="-1"></a><span class="fu">nrow</span>(DiscrScores<span class="sc">$</span>multi_sparse_score)        <span class="co">#797 sig. genes</span></span></code></pre></div>
+<p>[1] 794</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" tabindex="-1"></a><span class="fu">nrow</span>(DiscrScores2<span class="sc">$</span>multi_sparse_score)       <span class="co">#only 121 sig. genes</span></span></code></pre></div>
+<p>[1] 121</p>
+<p>Finally, we show some summary plots and tables for the classification
+results.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" tabindex="-1"></a><span class="fu">par</span>(<span class="at">mfrow=</span><span class="fu">c</span>(<span class="dv">3</span>,<span class="dv">1</span>))</span>
+<span id="cb18-2"><a href="#cb18-2" tabindex="-1"></a>xl <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="fu">min</span>(DiscrScores<span class="sc">$</span>single_score)<span class="sc">-</span><span class="dv">2</span>, <span class="fu">max</span>(DiscrScores<span class="sc">$</span>single_score)<span class="sc">+</span><span class="dv">2</span>)</span>
+<span id="cb18-3"><a href="#cb18-3" tabindex="-1"></a><span class="fu">hist</span>(DiscrScores<span class="sc">$</span>single_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>], <span class="at">xlim =</span> xl, <span class="at">main =</span> <span class="st">&quot;Distribution of the overall score&quot;</span>, <span class="at">xlab =</span> <span class="st">&quot;Overall score&quot;</span>, <span class="at">col=</span><span class="fu">rgb</span>(<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.5</span>))</span>
+<span id="cb18-4"><a href="#cb18-4" tabindex="-1"></a><span class="fu">hist</span>(DiscrScores<span class="sc">$</span>single_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2], <span class="at">col=</span><span class="fu">rgb</span>(<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.5</span>), <span class="at">add=</span><span class="cn">TRUE</span>)</span>
+<span id="cb18-5"><a href="#cb18-5" tabindex="-1"></a><span class="fu">legend</span>(<span class="st">&quot;topright&quot;</span>, <span class="fu">c</span>(<span class="st">&quot;Res = 0&quot;</span>, <span class="st">&quot;Res = 1&quot;</span>), <span class="at">col =</span> <span class="fu">c</span>(<span class="fu">rgb</span>(<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.5</span>), <span class="fu">rgb</span>(<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.5</span>)), <span class="at">lwd =</span> <span class="dv">10</span>, <span class="at">cex =</span> <span class="fl">0.5</span>)</span>
+<span id="cb18-6"><a href="#cb18-6" tabindex="-1"></a></span>
+<span id="cb18-7"><a href="#cb18-7" tabindex="-1"></a>xl <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="fu">min</span>(DiscrScores<span class="sc">$</span>single_sparse_score)<span class="sc">-</span><span class="dv">2</span>, <span class="fu">max</span>(DiscrScores<span class="sc">$</span>single_sparse_score)<span class="sc">+</span><span class="dv">2</span>)</span>
+<span id="cb18-8"><a href="#cb18-8" tabindex="-1"></a><span class="fu">hist</span>(DiscrScores<span class="sc">$</span>single_sparse_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>], <span class="at">xlim =</span> xl, <span class="at">main =</span> <span class="st">&quot;Distribution of the sparse score 1&quot;</span>, <span class="at">xlab =</span> <span class="st">&quot;Sparse score&quot;</span>, <span class="at">col=</span><span class="fu">rgb</span>(<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.5</span>))</span>
+<span id="cb18-9"><a href="#cb18-9" tabindex="-1"></a><span class="fu">hist</span>(DiscrScores<span class="sc">$</span>single_sparse_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2], <span class="at">col=</span><span class="fu">rgb</span>(<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.5</span>), <span class="at">add=</span><span class="cn">TRUE</span>)</span>
+<span id="cb18-10"><a href="#cb18-10" tabindex="-1"></a><span class="fu">legend</span>(<span class="st">&quot;topright&quot;</span>, <span class="fu">c</span>(<span class="st">&quot;Res = 0&quot;</span>, <span class="st">&quot;Res = 1&quot;</span>), <span class="at">col =</span> <span class="fu">c</span>(<span class="fu">rgb</span>(<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.5</span>), <span class="fu">rgb</span>(<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.5</span>)), <span class="at">lwd =</span> <span class="dv">10</span>, <span class="at">cex =</span> <span class="fl">0.5</span>)</span>
+<span id="cb18-11"><a href="#cb18-11" tabindex="-1"></a></span>
+<span id="cb18-12"><a href="#cb18-12" tabindex="-1"></a><span class="do">## the second sparse score; with fewer features</span></span>
+<span id="cb18-13"><a href="#cb18-13" tabindex="-1"></a>xl <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="fu">min</span>(DiscrScores2<span class="sc">$</span>single_sparse_score)<span class="sc">-</span><span class="dv">2</span>, <span class="fu">max</span>(DiscrScores2<span class="sc">$</span>single_sparse_score)<span class="sc">+</span><span class="dv">2</span>)</span>
+<span id="cb18-14"><a href="#cb18-14" tabindex="-1"></a><span class="fu">hist</span>(DiscrScores2<span class="sc">$</span>single_sparse_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>], <span class="at">xlim =</span> xl, <span class="at">main =</span> <span class="st">&quot;Distribution of the sparse score 2&quot;</span>, <span class="at">xlab =</span> <span class="st">&quot;Sparse score&quot;</span>, <span class="at">col=</span><span class="fu">rgb</span>(<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.5</span>))</span>
+<span id="cb18-15"><a href="#cb18-15" tabindex="-1"></a><span class="fu">hist</span>(DiscrScores2<span class="sc">$</span>single_sparse_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2], <span class="at">col=</span><span class="fu">rgb</span>(<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.5</span>), <span class="at">add=</span><span class="cn">TRUE</span>)</span>
+<span id="cb18-16"><a href="#cb18-16" tabindex="-1"></a><span class="fu">legend</span>(<span class="st">&quot;topright&quot;</span>, <span class="fu">c</span>(<span class="st">&quot;Res = 0&quot;</span>, <span class="st">&quot;Res = 1&quot;</span>), <span class="at">col =</span> <span class="fu">c</span>(<span class="fu">rgb</span>(<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.95</span>,<span class="fl">0.5</span>), <span class="fu">rgb</span>(<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.05</span>,<span class="fl">0.5</span>)), <span class="at">lwd =</span> <span class="dv">10</span>, <span class="at">cex =</span> <span class="fl">0.5</span>)</span></code></pre></div>
+<p><img role="img" src="data:image/png;base64,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" /><!-- --></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb19-1"><a href="#cb19-1" tabindex="-1"></a><span class="do">## create a summary table</span></span>
+<span id="cb19-2"><a href="#cb19-2" tabindex="-1"></a>single_score <span class="ot">=</span> <span class="fu">c</span>(<span class="fu">mean</span>(DiscrScores<span class="sc">$</span>single_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>]), <span class="fu">sd</span>(DiscrScores<span class="sc">$</span>single_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>]),</span>
+<span id="cb19-3"><a href="#cb19-3" tabindex="-1"></a>                 <span class="fu">mean</span>(DiscrScores<span class="sc">$</span>single_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2]), <span class="fu">sd</span>(DiscrScores<span class="sc">$</span>single_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2]))</span>
+<span id="cb19-4"><a href="#cb19-4" tabindex="-1"></a>single_sparse_score <span class="ot">=</span> <span class="fu">c</span>(<span class="fu">mean</span>(DiscrScores<span class="sc">$</span>single_sparse_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>]), <span class="fu">sd</span>(DiscrScores<span class="sc">$</span>single_sparse_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>]),</span>
+<span id="cb19-5"><a href="#cb19-5" tabindex="-1"></a>                 <span class="fu">mean</span>(DiscrScores<span class="sc">$</span>single_sparse_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2]), <span class="fu">sd</span>(DiscrScores<span class="sc">$</span>single_sparse_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2]))</span>
+<span id="cb19-6"><a href="#cb19-6" tabindex="-1"></a>single_sparse_score2 <span class="ot">=</span> <span class="fu">c</span>(<span class="fu">mean</span>(DiscrScores2<span class="sc">$</span>single_sparse_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>]), <span class="fu">sd</span>(DiscrScores2<span class="sc">$</span>single_sparse_score[<span class="dv">1</span><span class="sc">:</span>n2<span class="sc">/</span><span class="dv">2</span>]),</span>
+<span id="cb19-7"><a href="#cb19-7" tabindex="-1"></a>                 <span class="fu">mean</span>(DiscrScores2<span class="sc">$</span>single_sparse_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2]), <span class="fu">sd</span>(DiscrScores2<span class="sc">$</span>single_sparse_score[(n2<span class="sc">/</span><span class="dv">2</span><span class="sc">+</span><span class="dv">1</span>)<span class="sc">:</span>n2]))</span>
+<span id="cb19-8"><a href="#cb19-8" tabindex="-1"></a>summy_stat <span class="ot">=</span> <span class="fu">rbind</span>(single_score, single_sparse_score, single_sparse_score2)</span>
+<span id="cb19-9"><a href="#cb19-9" tabindex="-1"></a></span>
+<span id="cb19-10"><a href="#cb19-10" tabindex="-1"></a><span class="do">### signal to noise ratio</span></span>
+<span id="cb19-11"><a href="#cb19-11" tabindex="-1"></a>summy_stat <span class="ot">=</span> <span class="fu">cbind</span>(summy_stat, (summy_stat[,<span class="dv">3</span>]<span class="sc">-</span> summy_stat[,<span class="dv">1</span>])<span class="sc">/</span>(summy_stat[,<span class="dv">2</span>]<span class="sc">+</span>summy_stat[,<span class="dv">4</span>])<span class="sc">/</span><span class="dv">2</span><span class="sc">/</span><span class="fu">sqrt</span>(<span class="dv">4</span><span class="sc">/</span>n2))</span>
+<span id="cb19-12"><a href="#cb19-12" tabindex="-1"></a><span class="fu">colnames</span>(summy_stat) <span class="ot">=</span> <span class="fu">c</span>(<span class="st">&quot;mean0&quot;</span>, <span class="st">&quot;sd0&quot;</span>, <span class="st">&quot;mean1&quot;</span>, <span class="st">&quot;sd1&quot;</span>, <span class="st">&quot;SNR&quot;</span>)</span>
+<span id="cb19-13"><a href="#cb19-13" tabindex="-1"></a><span class="fu">rownames</span>(summy_stat) <span class="ot">=</span> <span class="fu">c</span>(<span class="st">&quot;Using all genes&quot;</span>,</span>
+<span id="cb19-14"><a href="#cb19-14" tabindex="-1"></a>                         <span class="fu">paste0</span>(<span class="st">&quot;Sparse score 1 (&quot;</span>, <span class="fu">nrow</span>(DiscrScores<span class="sc">$</span>multi_sparse_score), <span class="st">&quot; genes)&quot;</span>),</span>
+<span id="cb19-15"><a href="#cb19-15" tabindex="-1"></a>                         <span class="fu">paste0</span>(<span class="st">&quot;Sparse score 2 (&quot;</span>, <span class="fu">nrow</span>(DiscrScores2<span class="sc">$</span>multi_sparse_score), <span class="st">&quot; genes)&quot;</span>))</span>
+<span id="cb19-16"><a href="#cb19-16" tabindex="-1"></a></span>
+<span id="cb19-17"><a href="#cb19-17" tabindex="-1"></a><span class="fu">kable</span>(<span class="fu">round</span>(summy_stat, <span class="dv">3</span>))</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">mean0</th>
+<th align="right">sd0</th>
+<th align="right">mean1</th>
+<th align="right">sd1</th>
+<th align="right">SNR</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Using all genes</td>
+<td align="right">56.366</td>
+<td align="right">2.035</td>
+<td align="right">60.707</td>
+<td align="right">2.470</td>
+<td align="right">3.407</td>
+</tr>
+<tr class="even">
+<td align="left">Sparse score 1 (794 genes)</td>
+<td align="right">51.870</td>
+<td align="right">1.768</td>
+<td align="right">58.258</td>
+<td align="right">2.284</td>
+<td align="right">5.574</td>
+</tr>
+<tr class="odd">
+<td align="left">Sparse score 2 (121 genes)</td>
+<td align="right">51.394</td>
+<td align="right">1.697</td>
+<td align="right">56.397</td>
+<td align="right">2.083</td>
+<td align="right">4.679</td>
+</tr>
+</tbody>
+</table>
+<p>From the plots and tables, we see that both the one-dimensional
+overall and sparse scores have discriminant powers to separate the two
+gender groups, and the sparse score seems to have better signal-to-noise
+ration (SNR) than the overall score. While sparse score 2 has slightly
+lower SNR compared with sparse score 1, it still has good discriminant
+power and can be a practical option (because it uses much fewer
+features) in real world applications.</p>
+<p>These 1-dimensional scores, as well as their multivariate
+counterparts (entries <code>multi_score</code> and
+<code>multi_sparse_score</code> in objects <code>DiscrScores</code> and
+<code>DiscrScores2</code>), can be used in linear or nonlinear machine
+learning algorithms to build the actual classifiers for the binary
+outcome.</p>
+</div>
+</div>
+<div id="real-data-example" class="section level2">
+<h2>Real data example</h2>
+<p>To be written later based on the UR/JCVI collaboration on the RPRC
+data.</p>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

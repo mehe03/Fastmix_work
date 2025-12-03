@@ -1,0 +1,1178 @@
+---
+title: "Simulation and Models"
+author: "Meherab Hossain"
+date: "2025-06-15"
+output: html_document
+---
+
+
+```{r library}
+library(tidyverse)
+library(lmerTest)
+library(fastmap)
+library(furrr)   # for future_map2
+library(future) 
+
+#devtools::install_github("terrysun0302/FastMix", build_vignettes = FALSE, force = TRUE)
+
+library(FastMix)
+vignette("FastMix")
+```
+# Create Dataset
+
+```{r}
+set.seed(123)
+
+# Parameters
+n_subjects <- 200
+n_timepoints <- 5
+total_obs <- n_subjects * n_timepoints
+
+# Generate subject IDs and time variable
+subject <- rep(1:n_subjects, each = n_timepoints)
+time <- rep(1:n_timepoints, times = n_subjects)
+
+# Covariates
+X1 <- rnorm(total_obs, mean = time, sd = 1)  # time-varying
+X2 <- rnorm(total_obs, mean = time * 0.5, sd = 1)  # time-varying
+X3 <- rep(rnorm(n_subjects, mean = 0, sd = 1), each = n_timepoints)  # time-invariant
+X4 <- rep(rnorm(n_subjects, mean = 0, sd = 1), each = n_timepoints)  # time-invariant
+X5 <- rep(rnorm(n_subjects, mean = 0, sd = 1), each = n_timepoints) # time-invariant
+X6 <- rep(rnorm(n_subjects, mean = 0, sd = 1), each = n_timepoints)# time-invariant
+# True fixed effect coefficients
+beta <- c(X1 = 2.0, X2 = -1.5, X3 = 1.0, X4 = -2, X5 = 1.5, X6 =0)
+
+# Random intercepts per subject
+subject_intercepts <- rnorm(n_subjects, mean = 0, sd = 1)
+intercepts <- subject_intercepts[subject]
+
+subject_slopes <- rnorm(n_subjects, mean = 0, sd = 0.5)
+slopes <- subject_slopes[subject]
+
+
+# Simulate outcome Y
+Y <- (beta["X1"] +slopes)* X1 +
+     (beta["X2"] + slopes)* X2 +
+     beta["X3"] * X3 +
+      beta["X4"] * X4 +
+      beta["X5"] * X5 +
+       beta["X6"] * X6 +
+     intercepts  +
+     rnorm(total_obs, mean = 0, sd = 1)
+
+# Combine into a data frame
+df <- data.frame(subject = factor(subject), time, X1, X2, X3, X4, X5, X6, Y)
+
+# Save true coefficients and intercepts
+true_params <- list(beta = beta, subject_intercepts = subject_intercepts, subject_slopes = subject_slopes)
+saveRDS(true_params, file = "true_parameters.rds")
+
+# Optionally, save the dataset
+write.csv(df, "simulated_longitudinal_data.csv", row.names = FALSE)
+
+
+true_params$beta
+
+```
+
+## Fitting  Basic Models
+```{r fitting_models}
+# LMER model
+lmer_fit <- lmer(Y ~ X1 + X2 + X3 + X4 + X5 + X6 +(1 + X1+ X2| subject), data = df)
+
+
+
+
+# OLS model ignoring subject structure
+ols_fit <- lm(Y ~ X1 + X2 + X3 + X4 +X5 + X6,data = df)
+
+# Compare estimates
+summary(lmer_fit)
+summary(ols_fit)
+print(true_params$beta)
+
+
+
+# 
+# FastMix:::hy.ols.blup.wrapper
+# FastMix:::sigmaR2
+# FastMix:::Sinv1
+# FastMix:::RobustMeanEst
+```
+##  Functions
+```{r fastmix_restructure, message=FALSE, echo=FALSE}
+# Load necessary packages
+library(FastMix)
+library(Matrix)
+
+
+
+# FastMix:::rsolve
+# FastMix:::RobustMeanEst
+# FastMix:::ols.eblup.trim
+# FastMix:::cov.est
+# FastMix:::rsolve
+# FastMix:::rhalfinv
+# FastMix:::Sfunc1
+# FastMix:::hy.ols.blup.wrapper
+
+cov.est = function (bmat, var.epsilon, xx, m, coef) 
+{
+    vc <- cov(as.matrix(bmat))
+    diag(vc) = diag(vc) * coef
+    vc <- vc - 1/m * var.epsilon * xx
+    return(as.matrix(vc))
+}
+
+rhalfinv = function (X, min.cond.num = 1e-06) 
+{
+    X <- as.matrix(X)
+    if (nrow(X) != ncol(X)) 
+        stop("X must be a squared matrix!")
+    if (!isSymmetric(X, tol = 1e-06)) 
+        warning("X needs to be a symmetric matrix!")
+    if (all(dim(X) == c(1, 1))) {
+        Xhalfinv <- 1/sqrt(pmax(X, 0))
+    }
+    else {
+        o <- eigen(X, symmetric = TRUE)
+        u <- o$vector
+        lambda <- min.cond.num * max(o$values)
+        dd <- pmax(o$values, lambda)
+        Xhalfinv <- u %*% diag(1/sqrt(dd)) %*% t(u)
+    }
+    return(Xhalfinv)
+}
+
+
+rsolve = function (X, min.cond.num = 1e-06) 
+{
+    o <- svd(X)
+    lambda <- min.cond.num * max(o$d)
+    dd <- pmax(o$d, lambda)
+    if (length(dd) == 1) {
+        dd.inv <- 1/dd
+    }
+    else {
+        dd.inv <- diag(1/dd)
+    }
+    return(o$v %*% dd.inv %*% t(o$u))
+}
+
+RobustMeanEst = function (X, Sigma = diag(ncol(X)), trim = 0.5, tol = 0.01, max.iter = 10, 
+    ...) 
+{
+    L <- ncol(X)
+    S.half.inv <- rhalfinv(Sigma)
+    S.half <- rsolve(S.half.inv)
+    Xtilde <- X %*% S.half.inv
+    mus.now = colMeans(Xtilde)
+    k <- 0
+    err <- Inf
+    while ((abs(err) > tol) & (k < max.iter)) {
+        Z <- sweep(Xtilde, 2, mus.now)
+        ll <- sqrt(rowSums(Z^2))
+        R <- as.numeric(quantile(ll, 1 - trim))
+        idx <- which(ll <= R)
+        if (L == 1) {
+            Mvec.trim <- mean(Z[idx, ])
+        }
+        else {
+            Mvec.trim <- colMeans(Z[idx, ])
+        }
+        M.trim <- sqrt(sum(Mvec.trim^2))
+        v <- Mvec.trim/M.trim
+        o <- Sinv1(M.trim, R, L = L, ...)
+        err <- o$mu1
+        mus.next <- mus.now + err * v
+        mus.now <- mus.next
+        k <- k + 1
+    }
+    mu.est <- drop(S.half %*% mus.now)
+    kappa <- err/M.trim
+    V.inflation <- kappa^2 * sigmaR2(trim, L)/(1 - trim)
+    return(list(mu.est = mu.est, niter = k, err = err, R = R, 
+        V.inflation = V.inflation))
+}
+
+
+
+Sinv1 = function (mu1.trim, R, L, ngrid = 500, tol = 1e-04, max.iter = 10) 
+{
+    k <- 0
+    err <- Inf
+    mu1.now = mu1.trim
+    while ((abs(err) > tol) & (k < max.iter)) {
+        rk <- Sfunc1(mu1.now, R, L, ngrid = ngrid)
+        mu1.next <- mu1.now - (rk[["S"]] - mu1.trim)/rk[["dS"]]
+        k <- k + 1
+        err <- mu1.next - mu1.now
+        mu1.now <- mu1.next
+    }
+    if (abs(err) > tol) 
+        warning("Maximum number of iteration reached but the error is still greater than the tolerance level.")
+    return(list(mu1 = mu1.now, niter = k, err = err))
+}
+
+Sfunc1 = function (mu, R, L, ngrid = 500) 
+{
+    dx <- 2 * R/ngrid
+    mygrid <- seq(-R, R, dx)
+    phi.grid <- dnorm(mygrid - mu)
+    Fchi2.grid <- pchisq(R^2 - mygrid^2, L - 1)
+    h.grid <- Fchi2.grid * phi.grid
+    Bmu <- sum(h.grid) * dx
+    Tmu <- sum(h.grid * mygrid) * dx
+    Hmu <- sum(h.grid * (mygrid^2)) * dx
+    return(c(Tmu = Tmu, Bmu = Bmu, Hmu = Hmu, S = Tmu/Bmu, dS = (Hmu * 
+        Bmu - Tmu^2)/Bmu^2))
+}
+
+
+sigmaR2 = function (trim, L) 
+{
+    sigmaR2 <- pchisq(qchisq(1 - trim, df = L), df = L + 2)/(1 - 
+        trim)
+    return(sigmaR2)
+}
+
+hy.ols.blup.wrapper =function (Des, Y, var.epsilon, number, random = random, vc, independent = F, 
+    trim.idx = NULL, min.cond.num = 1e-06, bias_term) 
+{
+  
+    N <- length(Y)
+    m <- length(unique(Des[, 1]))
+    n <- N/m
+    vc <- as.matrix(vc)
+    
+    if (independent == F) {
+     
+        a <- eigen(vc, symmetric = TRUE)
+        a$values <- pmax(a$values, var.epsilon/100)
+        if (length(a$values) == 1) {
+            L <- as.matrix(sqrt(a$values))
+            L2 <- as.matrix(a$values)
+        }
+        else {
+            L <- diag(sqrt(a$values))
+            L2 <- diag(a$values)
+        }
+        A <- a$vectors %*% L %*% t(a$vectors)
+        vc.hat <- a$vectors %*% L2 %*% t(a$vectors)
+        Des.prime <-as.matrix(Des[, c(1 + random)]) %*% A
+        DZ.prime <- Des.prime
+    }else {
+     
+        vc = diag(diag(vc))
+        a <- eigen(vc, symmetric = TRUE)
+        a$values <- pmax(a$values, var.epsilon/100)
+        
+       
+       
+        if (length(a$values) == 1) {
+            L <- as.matrix(sqrt(a$values))
+            L2 <- as.matrix(a$values)
+        }
+        else {
+  
+            L <- diag(sqrt(a$values))
+            L2 <- diag(a$values)
+        }
+        A <- a$vectors %*% L %*% t(a$vectors)
+        vc.hat <- a$vectors %*% L2 %*% t(a$vectors)
+        Des.prime <- as.matrix(Des[, c(1 + random)]) %*% A
+        DZ.prime <- Des.prime
+        
+       
+
+    }
+    lambda.hat <- 1/var.epsilon
+    ZZ <- lapply(1:m, function(i) t(DZ.prime[(number[i] + 1):(number[i + 
+        1]), ]) %*% DZ.prime[(number[i] + 1):(number[i + 1]), 
+        ])
+    cap <- lapply(1:m, function(i) {
+        rsolve(diag(length(random)) + lambda.hat * ZZ[[i]])
+    })
+    XZ <- lapply(1:m, function(i) t(Des[(number[i] + 1):(number[i + 
+        1]), -1]) %*% DZ.prime[(number[i] + 1):(number[i + 1]), 
+        ])
+    XX <- lapply(1:m, function(i) {
+        t(as.matrix(Des[(number[i] + 1):(number[i + 1]), -1])) %*% as.matrix(Des[(number[i] + 
+            1):(number[i + 1]), -1])
+    })
+    if (is.null(trim.idx)) {
+        sigmabeta_i <- lapply((1:m), function(i) {
+            XX[[i]] - lambda.hat * XZ[[i]] %*% cap[[i]] %*% t(XZ[[i]])
+        })
+        sigmabeta <- var.epsilon * rsolve(Reduce("+", sigmabeta_i))
+        ZY <- lapply(1:m, function(i) t(DZ.prime[(number[i] + 
+            1):(number[i + 1]), ]) %*% Y[(number[i] + 1):(number[i + 
+            1])])
+        XY <- lapply(1:m, function(i) t(Des[(number[i] + 1):(number[i + 
+            1]), -1]) %*% Y[(number[i] + 1):(number[i + 1])])
+        betai <- lapply((1:m), function(i) XY[[i]] - lambda.hat * 
+            XZ[[i]] %*% cap[[i]] %*% ZY[[i]])
+        betahat <- 1/var.epsilon * sigmabeta %*% Reduce("+", 
+            betai)
+    }
+    else {
+        sigmabeta_i <- lapply((1:m)[trim.idx], function(i) {
+            XX[[i]] - lambda.hat * XZ[[i]] %*% cap[[i]] %*% t(XZ[[i]])
+        })
+        sigmabeta <- var.epsilon * rsolve(Reduce("+", sigmabeta_i), 
+            min.cond.num = min.cond.num)
+        ZY <- lapply(1:m, function(i) t(DZ.prime[(number[i] + 
+            1):(number[i + 1]), ]) %*% Y[(number[i] + 1):(number[i + 
+            1])])
+        XY <- lapply(1:m, function(i) t(Des[(number[i] + 1):(number[i + 
+            1]), -1]) %*% Y[(number[i] + 1):(number[i + 1])])
+        betai <- lapply((1:m)[trim.idx], function(i) XY[[i]] - 
+            lambda.hat * XZ[[i]] %*% cap[[i]] %*% ZY[[i]])
+        betahat <- 1/var.epsilon * sigmabeta %*% Reduce("+", 
+            betai)
+    }
+    betahat[random] = betahat[random] + bias_term
+    gamma.hat <- lapply(1:m, function(i) lambda.hat * A %*% (ZY[[i]] - 
+        t(XZ[[i]]) %*% betahat - lambda.hat * ZZ[[i]] %*% cap[[i]] %*% 
+        ZY[[i]] + lambda.hat * ZZ[[i]] %*% cap[[i]] %*% t(XZ[[i]]) %*% 
+        betahat))
+    blup <- t(do.call(cbind, gamma.hat))
+    colnames(blup) <- colnames(Des)[-1][random]
+    yvar <- lapply(1:m, function(i) rsolve(ZZ[[i]] + diag(var.epsilon, 
+        length(random)), min.cond.num = min.cond.num))
+    var.part1 <- lapply(1:m, function(i) A %*% ZZ[[i]] %*% yvar[[i]] %*% 
+        A)
+    var.part2 <- lapply(1:m, function(i) A %*% yvar[[i]] %*% 
+        t(XZ[[i]]) %*% sigmabeta %*% XZ[[i]] %*% yvar[[i]] %*% 
+        A)
+    var2.part1 <- lapply(1:m, function(i) ZZ[[i]] %*% yvar[[i]])
+    var2.part2 <- lapply(1:m, function(i) yvar[[i]] %*% t(XZ[[i]]) %*% 
+        sigmabeta %*% XZ[[i]] %*% yvar[[i]])
+    var2.eblup <- lapply(1:m, function(i) var2.part1[[i]] - var2.part2[[i]])
+    var.eblup <- lapply(1:m, function(i) var.part1[[i]] - var.part2[[i]])
+    eta.stat <- unlist(lapply(1:m, function(i) {
+        t(blup[i, ]) %*% rsolve(var.eblup[[i]], min.cond.num = min.cond.num) %*% 
+            blup[i, ]
+    }))
+    eta.stat2 <- lapply(1:m, function(i) {
+        rhalfinv(var.eblup[[i]], min.cond.num = min.cond.num) %*% 
+            blup[i, ]
+    })
+    eta.stat2 <- t(do.call("cbind", eta.stat2))
+    eta.stat3 <- lapply(1:m, function(i) {
+        1/sqrt(diag(as.matrix(var.eblup[[i]]))) * blup[i, ]
+    })
+    eta.stat3 <- t(do.call("cbind", eta.stat3))
+    eta.test <- lapply(1:m, function(i) {
+        blup[i, ]/sqrt(diag(as.matrix(var.eblup[[i]])))
+    })
+    eta.test <- t(do.call("cbind", eta.test))
+    cov = vc.hat * var.epsilon * lambda.hat
+    rownames(cov) <- colnames(cov) <- colnames(Des)[-1][random]
+    var.eblup.mean <- Reduce("+", var.eblup)/length(var.eblup)
+    return(list(eta.stat = eta.stat, eta.stat2 = eta.stat2, eta.stat3 = eta.stat3, 
+        eta.test = eta.test, blup = blup, betahat = betahat, 
+        var.eblup.mean = var.eblup.mean, sigmabeta = sigmabeta, 
+        cov = cov, lambda.hat = lambda.hat))
+}
+
+```
+ 
+```{r}
+
+
+```
+
+
+## Main Function
+
+```{r another_func}
+# Setting up my functions
+
+design_martix = df[,c(1,3:9)] # only contains subject number and x-values [all subjects have at least null in all timepoints]
+y_values = df[,c( 9)]
+
+design_martix
+
+Des = design_martix
+
+
+
+  # Setting up some arguments
+  robust = "FastMix"
+  min.cond.num = 1e-6
+  random = c(1,2,6)
+  Y = as.matrix(y_values)
+  Des = design_martix
+  bias = 2
+  independent = TRUE
+  test = 1
+  trim.fix = TRUE
+
+#rsolve - what does it calculate
+
+ols_function <- function(Des, Y, random , independent = FALSE, trim = 0.5, robust = "FastMix", 
+                         test = 1, trim.fix = TRUE, min.cond.num = 1e-6, bias = 2) {
+  
+  # Setting up some arguments
+  # robust = "FastMix"
+  # min.cond.num = 1e-6
+  # random = c(1,2)
+  # Y = as.matrix(y_values)
+  # Des = design_martix
+  # bias = 2
+  # independent = TRUE
+  # test = 1
+  # 
+
+  
+  
+  
+  N <- length(Y) # number of total observations
+  ## Exclude the first column, ID, because it is just a label
+  covariates <- colnames(Des)[-1]
+  p <- length(covariates)
+  
+  
+  
+  
+  if(length(random) == 1 && random == "all") {
+    random <- 1:p
+  
+  } else {
+    random <- random
+  }
+
+  DZ <- Des[, c(1, random + 1)]  # the dense form of Z matrix, not a block diagonal one
+  dz <- as.data.frame(DZ)       # a data.frame used for some particular functions
+
+  colnames(dz)[1] <- "ID"
+  
+  
+  #========================================================================================#
+  #============ step 1: initial estimation of fix effect and B matrix =====================#
+  #========================================================================================#
+  
+  
+  m <- length(unique(Des[,1])) # the # of subjects
+  ID <- sort(unique(Des[,1]))
+  qprime <- m*p #the number of parameters
+  ## 02/21/2019. We need to assume that all subjects (genes) have
+  ## exact the same number of "time points" (arrays)
+  n <- N/m  #number of arrays
+  
+  
+ 
+  ###calculate the var.epsilon
+  number <- dz %>%
+  dplyr::group_by(ID) %>%
+  dplyr::summarize(num = dplyr::n(), .groups = "drop") %>%
+  dplyr::mutate(start = dplyr::lag(cumsum(num), default = 0),
+                end = cumsum(num))
+
+  number <- cumsum(number[,2]) #idx for each subject
+  number = c(0,number$num)
+
+
+  
+  ### here, we use a median-based estimator for var.epsilon
+  res <- sapply(1:m, function(i) {
+                      rows <- (number[i] + 1):(number[i + 1])
+                      x <- as.matrix(Des[rows, -1])
+                      y <- Y[rows]
+                      sum(lm.fit(x = x, y = y)$residuals^2)
+                    })
+
+var.epsilon <- median(res) / ((n-p)*(1-2/(9*(n-p)))^3)
+
+
+
+  ### fix effect estimation
+  coef.fix <- lm.fit(x = as.matrix(Des[, -1]), y = Y)$coeff
+
+  ### Y - fixed effect
+  new.Y <- Y - as.matrix(Des[, -1]) %*% coef.fix
+  ### ols-based random effects estimation
+  ols <- lapply(1:m, function(i) lm.fit(as.matrix(Des[(number[i]+1):(number[i+1]),(1 +random)]), y = new.Y[(number[i]+1):(number[i+1])])$coeff)
+  ols <- do.call(rbind, ols)
+
+  xx <- lapply(1:m, function(i) {
+    rows <-  (number[i] + 1):(number[i + 1])
+    rsolve(crossprod(as.matrix(Des[rows,(1 +random)])), min.cond.num=min.cond.num)})
+
+  
+
+
+  
+  XX <- Reduce("+", xx)
+
+  coef_vector = rep(1, length(random))
+
+  norm_idx = c()
+  p_random = length(random)
+  trim.idx = NULL
+  
+  
+ 
+
+  
+
+
+   if(p_random > 1){
+    if(robust == FALSE) {
+      vc.refit <- cov.est(ols, var.epsilon, XX, m, coef = coef_vector)
+      norandom <- names(which(diag(vc.refit) <= 0))
+      if(length(norandom) > 0){
+        warning(paste0("Some covariates designated with random effects (",
+                       paste(norandom, collapse=", "),
+                       ") have zero empirical variance."))
+      }
+    }
+    ### robust estimation by existing method from package "robust"
+    else if(robust == "mcd") vc.refit <- robust.cov.est(ols, var.epsilon, XX, m, robust)
+    else if(robust == "weighted") vc.refit <- robust.cov.est(ols, var.epsilon, XX, m, robust)
+    else if(robust == "donostah") vc.refit <- robust.cov.est(ols, var.epsilon, XX, m, robust)
+    else if(robust == "pairwiseQC") vc.refit <- robust.cov.est(ols, var.epsilon, XX, m, robust)
+
+    ### proposed robust estimation
+    else if(robust == "FastMix") {
+
+      ### intial B estimation
+      vc <- cov.est(ols, var.epsilon, XX, m, coef = coef_vector)
+      norandom <- names(which(diag(vc) <= 0))
+      
+  
+      
+      if(length(norandom) > 0){
+        warning(paste0("Some covariates designated with random effects (",
+                       paste(norandom, collapse=", "),
+                       ") have zero empirical variance."))
+      }
+
+
+
+      ### useful chi-square type stats in trimming step
+      B_cov = lapply(1:m, function(i) vc + var.epsilon * xx[[i]])
+      ## B_cov_inv_half = lapply(1:m, function(i) {eig = eigen(rsolve(B_cov[[i]])); eig$vectors %*% sqrt(diag(eig$values)) %*% t(eig$vectors)})
+     
+      B_cov_inv_half = lapply(B_cov, function(x) rhalfinv(x, min.cond.num=min.cond.num))
+      Norm_B = lapply(1:m, function(i) ols[i, ] %*% B_cov_inv_half[[i]])
+      Norm_B = do.call(rbind,Norm_B)
+     
+      
+     
+
+
+      ### bias_correction calculation based on intial random effects estimation
+      #I ADDED THIS
+      B_sum <- Reduce("+", B_cov)
+      B_cov_avg <- B_sum / length(B_cov)
+      
+      rr_ols = RobustMeanEst(ols, B_cov_avg, tol=0.001, max.iter=10)
+     if(bias == 1 | bias == 2) { 
+          bias_term = rr_ols$mu.est
+        } else {
+             bias_term = rep(0, p_random)
+                }
+
+      
+      #=================================================================================================================#
+      #============================= step 2: first stage WLS and EBLUP =================================================#
+      #=================================================================================================================#
+      initialfit <- hy.ols.blup.wrapper(Des, Y, var.epsilon, number, random = random, vc = vc, independent = independent,
+                                        trim.idx = trim.idx, min.cond.num=min.cond.num, bias_term = bias_term)
+      
+      
+
+      # print(dim(Des)[1,])
+      # print(length(Y))
+      # print(dim(vc))
+      # print(dim(initialfit$blup))
+      #=================================================================================================================#
+      #===================== step 3: trimming based re-estimation of B =================================================#
+      #=================================================================================================================#
+      ### DEGs detection
+   
+      if(test == 1){
+        #norm_test = apply(initialfit$eta.stat2,2,function(x) shapiro.test(x)$p)
+        # ## summary(Mclust(a, x = mclustBIC(a, verbose = F), verbose = F), parameters = TRUE)$G
+        selected_cols = which(diag(vc>0))
+        norm_test = apply(initialfit$eta.stat3[,selected_cols,drop = FALSE],2,function(a) mclustModel(a, mclustBIC(a, G=1:3, modelNames="V", verbose=F))$G )
+        norm_idx = rep(NA, p_random)
+        norm_idx[diag(vc) > 0] = norm_test > 1
+        norm_idx[diag(vc) <= 0] = 0
+      } else {                          #Anderson-Darling
+        #norm_test = apply(initialfit$eta.stat3,2,function(x) shapiro.test(x)$p): this test has sample size limitation
+        norm_test = apply(initialfit$eta.stat3,2,function(x) ad.test(x)$p) #: this test has sample size limitation
+        norm_idx = (norm_test < 0.05) & (diag(vc) > 0)
+      }
+
+      ### the number of detected DEGs
+      trimdf <- sum(norm_idx)
+      
+      ###
+      
+      if(trimdf > 0){
+        chi_stat = lapply(1:m, function(i) sum(Norm_B[i, norm_idx == T]^2))
+        chi_stat = unlist(chi_stat)
+        ## we remove extremely large chi_stat by amount 'trim' (by default=0.5)
+        trim.idx <- which(chi_stat %in% chi_stat[order(chi_stat)][1:(m*(1 - trim))])
+        ## truncated chi_stat follows a truncated chisq distribution;
+        ## for now we use MC method to calculate lambda_alpha (Eq. 20 in the manuscript)
+        simchi <- rchisq(1000000, df = trimdf)
+        lambda.quan <-  trimdf /mean((simchi[order(simchi)][1:(1000000*(1-trim))]))
+        if(trimdf == 1) {
+          mult = var(Norm_B[trim.idx,norm_idx == T])*lambda.quan
+        }
+        else{
+          mult = diag(cov(Norm_B[trim.idx,norm_idx == T]))*lambda.quan
+        }
+        coef_vector = c()
+        coef_vector[norm_idx == T] = mult
+        coef_vector[norm_idx == F] = 1
+        vc.refit <- cov.est(ols, var.epsilon, XX, m, coef = coef_vector)
+
+        ### here, when there is at least one selected direction, wedo bias-correctionin these directions.
+        B_cov_refit = lapply(1:m, function(i) vc.refit + var.epsilon * xx[[i]])
+        rr_ols = RobustMeanEst(ols, B_cov_refit[[1]], tol=0.001, max.iter=10)
+
+        v_inflation = 1
+        ### 04/15/2019: bias correction step
+        if(bias == 1) {
+          bias_term = rr_ols$mu.est
+          v_inflation = rr_ols$V.inflation
+        }
+        else if(bias == 2) {
+          bias_term = norm_idx * rr_ols$mu.est
+          v_inflation = rep(1, p_random)
+          v_inflation[norm_idx !=0] = rr_ols$V.inflation
+        }
+        else bias_term = rep(0, p_random)
+
+      }
+      else{
+        vc.refit = vc
+        bias_term = rep(0, p_random)
+        v_inflation = 1
+      }
+    }
+    
+
+    if(trim.fix == FALSE){
+      refit <- hy.ols.blup.wrapper(Des, Y, var.epsilon, number, random = random, vc = vc.refit, independent = independent, trim.idx = NULL, min.cond.num=min.cond.num,
+                                   bias_term = bias_term)
+    } else {
+      refit <- hy.ols.blup.wrapper(Des, Y, var.epsilon, number, random = random, vc = vc.refit, independent = independent, trim.idx = trim.idx, min.cond.num=min.cond.num,
+                                   bias_term = bias_term)
+    }
+    re.pvalue <- 1 - pchisq(refit$eta.stat, df = p_random)
+
+    re.ind.pvalue <- 2*(1 - pnorm(abs(refit$eta.stat2)))
+    # if(test == 1) re.ind.pvalue <- 2*(1 - pnorm(abs(refit$eta.stat2)))
+    # else{re.ind.pvalue <- 2*(1 - pnorm(abs(refit$eta.stat3)))}
+    colnames(re.ind.pvalue) <- covariates[random]
+  }else{print("Random = 1 not done")}
+  
+    betamat <- matrix(rep(refit$betahat, m), nrow = m, byrow = T)
+    
+    colnames(betamat) <- colnames(Des)[-1]
+    betamat[, random] <- refit$blup + betamat[, random]
+    t.fixed <- drop(refit$betahat/sqrt(diag(as.matrix(refit$sigmabeta))))
+    
+    
+  
+    std.err.fixed <- sqrt(diag(as.matrix(refit$sigmabeta))) # Added this
+    t.fixed[random] <- t.fixed[random]/sqrt(v_inflation)
+    vc.new <- sqrt(pmax(diag(vc.refit), 0) * var.epsilon * refit$lambda.hat)
+    VC <- data.frame(sqrt(var.epsilon), vc.new)
+    Yhat <- lapply(1:m, function(i) as.matrix(Des[(number[i] + 1):(number[i + 
+        1]), -1]) %*% betamat[i, ])
+    Yhat <- do.call(rbind, Yhat)
+    colnames(VC) <- c("sigma.e", "sigma.gamma")
+    
+    
+    fixed.df <- ifelse(min(m, N/m) - p-1>=0,1,min(m, N/m) - p-1)
+    #fixed.df <- min(m, N/m) - p-1
+    
+    fixed.p <- 2 * pt(abs(drop(t.fixed)), df = fixed.df, lower.tail = FALSE)
+    fixed.p.adj <- p.adjust(fixed.p, method = "BH")
+    fixed.results <- cbind(betahat = drop(refit$betahat), tstat = t.fixed, 
+        p.value = fixed.p, p.adj = fixed.p.adj)
+    rownames(fixed.results) <- colnames(Des)[-1]
+    
+    
+    return(list(fixed.results = fixed.results, beta.mat = betamat, Yhat = Yhat, 
+        sigma.beta = refit$sigmabeta, VC = VC, cov = refit$cov, 
+        var.epsilon = var.epsilon, var.eblup.mean = refit$var.eblup.mean, 
+        re.pvalue = re.pvalue, eta = refit$eta.stat, re.ind.pvalue = re.ind.pvalue, 
+        out_idx = norm_idx, std.err.fixed.eff = std.err.fixed))
+  
+}
+
+
+
+
+
+```
+
+
+
+
+```{r testing_func}
+
+  # Setting up some arguments
+  # robust = "FastMix" 
+  # min.cond.num = 1e-6
+  # random = c(1,2)
+  # Y = as.matrix(y_values)
+  # Des = design_martix
+  # bias = 2
+  # independent = TRUE
+  # test = 1
+
+
+
+
+df = sim_data_list[[1]]
+
+design_martix = df[,c(1,3:5)] # only contains subject number and x-values [all subjects have at least null in all timepoints]
+y_values = df[,c(6)]
+
+
+
+
+ressy = ols_function(Des = design_martix,Y = y_values,random = c(1,2),independent = TRUE,trim = 0.5,robust = "FastMix",test = 1,trim.fix = TRUE,min.cond.num = 1e-6,bias = 2)
+
+
+
+
+
+```
+
+# Creating 1000 copies
+
+
+```{r creating_datasets}
+set.seed(20250716)
+
+# Parameters
+n_subjects <- 200
+n_timepoints <- 5
+total_obs <- n_subjects * n_timepoints
+n_datasets <- 1000
+
+# True fixed effect coefficients
+true_beta_for_sim <- c(X1 = 2.0, X2 = -1.5,  X3 = 1.0 )
+
+# Pre-generate IDs and time (static across datasets)
+subject <- rep(1:n_subjects, each = n_timepoints)
+time <- rep(1:n_timepoints, times = n_subjects)
+subject_factor <- factor(subject)
+
+# Initialize list to store all datasets
+sim_data_list <- vector("list", n_datasets)
+
+for (i in 1:n_datasets) {
+  # Covariates
+  X1 <- rnorm(total_obs, mean = time*0.95, sd = 5)
+  X2 <- rnorm(total_obs, mean = time * 0.25, sd = 7)
+  X3 <- rep(rnorm(n_subjects, mean = 0, sd = 1), each = n_timepoints)
+
+  
+  # Random intercepts and slopes
+  subject_intercepts <- rnorm(n_subjects, mean = 0, sd = 1)
+  intercepts <- subject_intercepts[subject]
+  
+  subject_slopes <- rnorm(n_subjects, mean = 0, sd = 1)
+  slopes <- subject_slopes[subject]
+  
+  subject_slopes_X1 <- rnorm(n_subjects, mean = 0, sd = 15)
+  subject_slopes_X2 <- rnorm(n_subjects, mean = 0, sd = 10)
+
+  slopes_X1 <- subject_slopes_X1[subject]
+  slopes_X2 <- subject_slopes_X2[subject]
+  
+
+    
+  Y <- (true_beta_for_sim["X1"] + slopes_X1) * X1 +
+         (true_beta_for_sim["X2"] + slopes_X2) * X2 +
+         true_beta_for_sim["X3"] * X3 +
+         intercepts +
+         rnorm(total_obs, mean = 0, sd = 1)
+  
+
+  
+  # Store in list
+  sim_data_list[[i]] <- data.frame(
+    subject = subject_factor,
+    time = time,
+    X1 = X1, X2 = X2, X3 = X3,
+    Y = Y
+  )
+}
+
+# Optionally, name each element
+names(sim_data_list) <- paste0("dataset_", seq_len(n_datasets))
+
+
+sim_data_list[[1]]
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+fit_models_safe <- function(df, index) {
+  result <- list(
+    index = index,
+    ols = NULL,
+    lmer = NULL,
+    fastmix = NULL,
+    warning = NULL,
+    error2 = NULL,
+    error = NULL
+  )
+  
+  # Fit OLS
+  result$ols <- tryCatch(
+    lm(Y ~ 1 + X1 + X2 + X3 + X4 , data = df),
+    error = function(e) {
+      result$error <- paste("OLS error:", conditionMessage(e))
+      return(NULL)
+    }
+  )
+  
+  # Fit LMER
+  result$lmer <- withCallingHandlers(
+    tryCatch(
+      lmer(Y ~ 1 + X1 + X2 + X3 +X4  + (1 + X1 + X3 | subject), data = df, REML = FALSE),
+      error = function(e) {
+        result$error <- paste("LMER error:", conditionMessage(e))
+        return(NULL)
+      }
+    ),
+    warning = function(w) {
+      result$warning <- conditionMessage(w)
+      invokeRestart("muffleWarning")
+    }
+  )
+  
+  # Fit FastMix
+  result$fastmix <- tryCatch({
+    design_matrix <- df[,c(1,4:7)]  # Ensure correct column names
+    y_values <- df[, c(3)]
+    
+    ols_function(
+      Des = design_matrix,
+      Y = y_values,
+      random = c(1, 3),
+      independent = TRUE,
+      trim = 0.5,
+      robust = "FastMix",
+      test = 1,
+      trim.fix = TRUE,
+      min.cond.num = 1e-6,
+      bias = 2
+    )
+  }, error = function(e) {
+    result$error2 <- paste("FastMix error:", conditionMessage(e))
+    return(NULL)
+  })
+  
+  return(result)
+}
+
+
+start_time <- Sys.time()
+
+# Run in parallel with progress bar
+future::plan(multisession)  # or multicore on Unix
+results <- future_map2(
+  sim_data_list,
+  seq_along(sim_data_list),
+  fit_models_safe,
+  .progress = TRUE
+)
+
+
+
+
+end_time <- Sys.time()
+time_taken <- end_time - start_time
+print(time_taken)
+
+
+
+```
+
+```{r extract}
+# Extract successful model fits
+ols_models <- lapply(results, function(x) x$ols)
+lmer_models <- lapply(results, function(x) x$lmer)
+
+# Extract warning indices and messages
+warning_indices <- which(sapply(results, function(x) !is.null(x$warning)))
+warning_messages <- sapply(results[warning_indices], function(x) x$warning)
+
+# Extract error indices and messages
+error_indices <- which(sapply(results, function(x) !is.null(x$error)))
+error_messages <- sapply(results[error_indices], function(x) x$error)
+
+fast_models <- lapply(results, function(x) x$fastmix)
+fixed_list <- lapply(fast_models, function(x) x$fixed.results)
+first_cols <- lapply(fixed_list, function(mat) mat[, 1])
+
+combined <- do.call(cbind, first_cols)
+mean_first_col <- rowMeans(combined, na.rm = TRUE)
+se_first_col <- apply(combined, 1, function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x))))
+
+
+
+
+lmer_models[[1]]
+
+```
+
+
+
+
+```{r compiling}
+
+
+
+ols_coefs <- lapply(ols_models, coef)
+ols_matrix <- do.call(rbind, ols_coefs)
+ols_mean_coefs <- colMeans(ols_matrix, na.rm = TRUE)
+
+
+ols_std_err <- lapply(ols_models, function(m) summary(m)$coefficients[, 2])
+ols_std_err_matrix <- do.call(rbind, ols_std_err)
+ols_std_err_mean <- colMeans(ols_std_err_matrix, na.rm = TRUE)
+
+
+
+
+
+
+
+
+lmer_coefs <- lapply(lmer_models, function(m) fixef(m))
+lmer_matrix <- do.call(rbind, lmer_coefs)
+lmer_mean_coefs <- colMeans(lmer_matrix, na.rm = TRUE)
+
+
+lmer_std_err <- lapply(lmer_models, function(m) summary(m)$coefficients[, "Std. Error"])
+lmer_std_err_matrix <- do.call(rbind, lmer_std_err)
+lmer_std_err_mean <- colMeans(lmer_std_err_matrix, na.rm = TRUE)
+
+
+
+
+
+
+
+
+fast_models <- lapply(results, function(x) x$fastmix)
+
+fast_coefs_col1 <- lapply(fast_models, function(m) m$fixed.results[, 1])
+fast_std_err <- lapply(fast_models, function(m) m$std.err.fixed.eff)
+fast_std_err <- do.call(rbind, fast_std_err)
+fast_matrix <- do.call(rbind, fast_coefs_col1)
+fast_std_err <- colMeans(fast_std_err, na.rm = TRUE)
+fast_mean_coefs <- colMeans(fast_matrix, na.rm = TRUE)
+# Prepend (Intercept) = 0
+fast_mean_coefs <- c(`(Intercept)` = 0, fast_mean_coefs)
+fast_std_err_mean <- c(0, fast_std_err)
+names(fast_std_err_mean)= names(lmer_std_err_mean)
+
+
+
+mean_se_df <- data.frame(
+  Term = names(ols_mean_coefs),
+  OLS = ols_mean_coefs,
+  OLS_SE = ols_std_err_mean,
+  LMER = lmer_mean_coefs,
+  LMER_SE = lmer_std_err_mean,
+  FastMix = fast_mean_coefs,
+  FastMix_SE = fast_std_err_mean
+)
+
+print(mean_se_df)
+
+
+
+
+#intercept term?
+#n>p?
+#effects variance and T-statistics
+
+```
+
+
+
+```{r}
+
+
+
+simulate_longitudinal_data <- function(
+  n_subjects = 100,
+  n_reps = 10,
+  n_datasets = 1000,
+  n_covariates = 3,
+  time_varying = c("X1", "X2"),  # Which covariates are time-varying
+  beta = NULL,
+  random_intercepts = TRUE,
+  random_slopes = TRUE,
+  noise_sd = 1,
+  slope_sd = 5,     #
+  intercept_sd = 1, # INTERCEPT DEVIATION 
+  seed = NULL
+) {
+  if (!is.null(seed)) set.seed(seed)
+  
+  total_obs <- n_subjects * n_reps
+  time <- rep(seq_len(n_reps), times = n_subjects)
+  subject <- rep(seq_len(n_subjects), each = n_reps)
+  subject_factor <- factor(subject)
+  
+  # Covariate names
+  covariate_names <- paste0("X", seq_len(n_covariates))
+  
+  # Default beta
+  if (is.null(beta)) {
+    beta <- setNames(rep(1, n_covariates), covariate_names)
+  }
+  
+  # Initialize covariate matrix
+  covariates <- matrix(0, nrow = total_obs, ncol = n_covariates)
+  colnames(covariates) <- covariate_names
+  
+  for (j in seq_len(n_covariates)) {
+    cname <- covariate_names[j]
+    
+    if (cname %in% time_varying) {
+      # Time-varying: mean is function of time
+      
+      
+      #### HERE THE COVARIATES CHANGE WITH THE SAME MEAN
+      covariates[, j] <- rnorm(total_obs, mean = time * (0.25 + 0.5 * j), sd = 1)
+    } else {
+      # Time-invariant: fixed per subject
+      subject_values <- rnorm(n_subjects)
+      covariates[, j] <- subject_values[subject]
+    }
+  }
+  
+  # Subject-specific intercepts
+  intercepts <- if (random_intercepts) {
+    rnorm(n_subjects, mean = 0, sd = intercept_sd)[subject]
+  } else {
+    0
+  }
+  
+  # Subject-specific slopes for time-varying covariates
+  slopes_list <- list()
+   for (cname in time_varying) {
+    sd_val <- if (is.numeric(slope_sd) && length(slope_sd) == 1) {
+      slope_sd
+    } else if (cname %in% names(slope_sd)) {
+      slope_sd[[cname]]
+    } else {
+      stop(paste("Missing slope_sd value for covariate:", cname))
+    }
+    
+    slopes <- if (random_slopes) {
+      rnorm(n_subjects, mean = 0, sd = sd_val)[subject]
+    } else {
+      0
+    }
+    slopes_list[[cname]] <- slopes
+  }
+
+  
+  # Construct outcome Y
+  Y <- intercepts + rnorm(total_obs, mean = 0, sd = noise_sd) #adding epsilon
+  for (j in seq_len(n_covariates)) {
+    cname <- covariate_names[j]
+    main_effect <- beta[[cname]]
+    covariate <- covariates[, j]
+    slope <- if (cname %in% time_varying) slopes_list[[cname]] else 0
+    Y <- Y + (main_effect + slope) * covariate
+  }
+  
+  # Final dataset
+  data <- data.frame(
+    subject = subject_factor,
+    time = time,
+    Y = Y
+  )
+  data <- cbind(data, as.data.frame(covariates))
+  
+  return(data)
+}
+
+
+
+
+# Example: 10 subjects, 5 timepoints, 4 covariates (X1, X3 time-varying)
+set.seed(123)
+
+
+
+n_datasets = 1000
+
+
+sim_data_list <- lapply(seq_len(n_datasets), function(i) {
+ sim_data <- simulate_longitudinal_data(
+  n_subjects = 30,
+  n_reps = 10,
+  n_covariates = 4,
+  time_varying = c("X1", "X3"),
+  slope_sd = c(X1 = 10, X3 =5),   # <- different slope variability
+  beta = c(X1 = 1, X2 = 2, X3 = 3, X4 = 4),
+  random_intercepts = TRUE,
+  random_slopes = TRUE,
+  seed = 42
+)
+})
+names(sim_data_list) <- paste0("dataset_", seq_len(n_datasets))
+
+
+
+df = sim_data_list[[1]]
+
+test = lmer(Y ~ 1 + X1 + X2 + X3 +X4 + (1 + X1 + X3| subject), data = df, REML = FALSE)
+ 
+ summary(test)
+ 
+ 
+ # Random effects:
+#  Groups   Name        Variance Std.Dev. Corr       
+#  subject  (Intercept) 0.5020   0.7085              
+#           X1          0.6886   0.8298   -0.12      
+#           X3          0.7636   0.8739    0.12  0.03
+#  Residual             1.0312   1.0155              
+# Number of obs: 300, groups:  subject, 30
+# 
+# Fixed effects:
+#             Estimate Std. Error       df t value Pr(>|t|)    
+# (Intercept) -0.02581    0.18721 29.81104  -0.138  0.89128    
+# X1           0.54273    0.16375 30.47083   3.314  0.00238 ** 
+# X2           2.48666    0.27583 28.80825   9.015 6.97e-10 ***
+# X3           2.94569    0.16200 30.32555  18.184  < 2e-16 ***
+# X4           3.96865    0.18956 28.46325  20.936  < 2e-16 ***
+
+```
+
+
+
+
