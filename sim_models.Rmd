@@ -5,6 +5,7 @@ date: "2025-09-05"
 output: pdf_document
 ---
 
+# Library
 
 ```{r library}
 
@@ -12,7 +13,8 @@ library(tidyverse)
 library(lmerTest)
 library(fastmap)
 library(furrr)   # for future_map2
-library(future) 
+library(future)
+#library(devtools)
 #devtools::install_github("terrysun0302/FastMix", build_vignettes = FALSE, force = TRUE)
 library(FastMix)
 library(Matrix)
@@ -2172,7 +2174,7 @@ fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
       Zi <- as.matrix(DZ[idx, -1])
       
       Sigma_Yi <- Zi %*% Sigma_gamma_init %*% t(Zi) + sigma2_init * diag(nrow(Zi))
-      calc_once = solve(Sigma_Yi)
+      calc_once = rsolve(Sigma_Yi)
       
       
       p1 <- t(Xi) %*% calc_once %*% Xi
@@ -2278,6 +2280,8 @@ run_fastmix_on_dataset <- function(df, RAND_LIST = c(1,2,3,4), iter = 50) {
 
 
 library(progressr)
+
+plan(multisession, workers = parallel::detectCores() - 1)
 # Start timer
 start_time <- Sys.time()
 print(start_time)
@@ -2299,6 +2303,8 @@ elapsed <- end_time - start_time
 print(elapsed)
 
 saveRDS(results_list, "RDS_RESULTS.RDS")
+
+
 ```
 
 
@@ -2325,7 +2331,7 @@ run_lmer_on_dataset <- function(df) {
 
 
 
-plan(multisession)
+plan(multisession, workers = parallel::detectCores() - 1)
 
 start_time <- Sys.time()
 print(start_time)
@@ -2350,6 +2356,7 @@ print(time_needed)
 
 ## Plots
 
+### Beta
 
 ```{r plots_simple_new_fast, fig.height=8, fig.width=8}
 # ------------------------------
@@ -2366,7 +2373,7 @@ compute_error_path <- function(beta_history, true_beta) {
     mean((b - true_beta)^2)# MSE
     #sqrt(sum((b - true_beta)^2))# norm
     # To use Euclidean norm instead, uncomment the line below:
-    # sqrt(sum((b - true_beta)^2))
+     #sqrt(sum((b - true_beta)^2))
   })
 }
 
@@ -2404,6 +2411,10 @@ legend("topright", legend = c("Individual datasets", "Average"),
 
 
 ```
+### Sigma gamma plot
+
+
+
 ```{r sig_gam_plot, fig.height=8, fig.width=8}
 
 # True Σγ from DGP
@@ -2446,6 +2457,9 @@ legend("topright", legend = c("Individual datasets", "Average"),
 
 ```
 
+
+### gamma indiv
+
 ```{r gamma_individual, fig.height=8, fig.width=8}
 # ------------------------------
 # 1. Function to compute average error per iteration for dataset
@@ -2471,6 +2485,7 @@ compute_avg_subject_gamma_error <- function(gamma_history, true_re_df) {
 # ------------------------------
 # 2. Compute average errors for all datasets
 # ------------------------------
+
 gamma_error_list <- lapply(1:length(results_list), function(i) {
   compute_avg_subject_gamma_error(
     gamma_history = results_list[[i]]$gamma_history,
@@ -2502,6 +2517,8 @@ legend("topright", legend = c("Individual datasets", "Average"),
 
 ```
 
+
+### Tolerance Plot
 
 
 ```{r fig.height=8, fig.width=8}
@@ -2556,6 +2573,8 @@ legend("topright", legend = c("Individual datasets", "Average", "Threshold"),
 ```
 
 
+### sigma^2 convergence
+
 ```{r fig.height=8, fig.width=8}
 true_sigma2 <- 1^2
 
@@ -2591,7 +2610,7 @@ legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
 ```
 
 
-
+### Sigma trajectories
 ```{r traj_sigma2}
 
 # Convert sigma2_history list of each dataset into numeric vector
@@ -2623,12 +2642,14 @@ legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
 
 
 ```
+
+
 ## Final Results from each iteration
 
 
 ```{r fin_results}
-
-
+true_beta = c(2,1,2,-1)
+true_sigma_gamma = diag(c(1,0.25,0.75,0.5)^2)
 ## FASTMIX
 
 results_list = readRDS("RDS_RESULTS.RDS")
@@ -2661,16 +2682,16 @@ new_order <- c(4, 1, 2, 3)
 # Reordered covariance matrix
 S_reordered <- S[new_order, new_order]
 Sigma_gamma_mean = S_reordered
-
-
+len = length(beta_mean)
+beta_mean = c(beta_mean[len],beta_mean[-c(len)])
 
 cat("\n\n\ FOR FASTMIX \n")
 cat("\n\n The Sigma^2 estimate: \n", sigma2_mean)
 cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
 print(Sigma_gamma_mean)
-cat( "\n\n with MSE: ", mean((beta_mean-c(1,1,2,-1))^2 ))
+cat( "\n\n with MSE: ", mean((Sigma_gamma_mean-true_sigma_gamma)^2 ))
 cat("\n\n The beta estimate: \n")
-cat(beta_mean, "\n\n with MSE: ", mean((beta_mean-c(1,2,-1,2))^2 ))
+cat(beta_mean, "\n\n with MSE: ", mean((beta_mean-true_beta)^2 ))
 
 
 ### LMER
@@ -2693,7 +2714,7 @@ cat("\n\\n\n\n\n\ FOR LMER \n")
 cat("\n\n The Sigma^2 estimate: \n", sigma2_mean_lmer)
 cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
 print(Sigma_gamma_mean_lmer)
-cat("\n\n with MSE: ", mean((beta_mean_lmer-c(1,1,2,-1))^2 ))
+cat("\n\n with MSE: ", mean((Sigma_gamma_mean_lmer-true_sigma_gamma))^2)
 cat("\n\n The beta estimate: \n")
 cat(beta_mean_lmer, "\n\n with MSE: ", mean((beta_mean_lmer-c(2,1,2,-1))^2),"\n\n")
 
@@ -2701,21 +2722,72 @@ cat(beta_mean_lmer, "\n\n with MSE: ", mean((beta_mean_lmer-c(2,1,2,-1))^2),"\n\
 
 true_sigma_gamma = diag(c(1,0.25,0.75,0.5)^2)
 
-# Current covariance matrix
-S <- Sigma_gamma_mean
+# # Current covariance matrix
+# S <- Sigma_gamma_mean
+# 
+# # Desired order: move row/col 4 to the front
+# new_order <- c(4, 1, 2, 3)
+# 
+# # Reordered covariance matrix
+# S_reordered <- S[new_order, new_order]
+# Sigma_gamma_mean = S_reordered
 
-# Desired order: move row/col 4 to the front
-new_order <- c(4, 1, 2, 3)
-
-# Reordered covariance matrix
-S_reordered <- S[new_order, new_order]
-Sigma_gamma_mean = S_reordered
 
 
+
+
+mse_all <- sapply(seq_along(results_list), function(i) {
+  
+  # true REs reordered to match fastmix ordering
+  true_gamma <- simple_re_list[[i]][ , c("b_X1","b_X2","b_X3","rand_intercept")]
+  
+  # estimated REs at iteration 50
+  est_gamma_list <- results_list[[i]]$gamma_history[[50]]
+  est_gamma <- do.call(rbind, est_gamma_list)
+  
+  # MSE per subject
+  mse_subject <- rowMeans((est_gamma - true_gamma)^2)
+  
+  # average MSE for this dataset
+  mean(mse_subject)
+})
+
+# Final average across datasets
+cat("\n\n The mean MSE across all datasets for gamma estimates for FM: ")
+print(mean(mse_all))
+
+mse_lmer_all <- sapply(seq_along(lmer_results_list), function(i) {
+  
+  # TRUE random effects reordered to match lmer ordering (X1, X2, X3, intercept)
+  true_gamma <- simple_re_list[[i]][ , 
+                                             c("b_X1","b_X2","b_X3","rand_intercept")]
+  
+  # EST random effects from lmer
+  est_gamma <- as.matrix(ranef(lmer_results_list[[i]])[[1]])
+  est_gamma <- est_gamma[ , c("X1","X2","X3","(Intercept)")]
+  # Subject-level MSE
+  mse_subject <- rowMeans((est_gamma - true_gamma)^2)
+  
+  # Dataset-level MSE
+  mean(mse_subject)
+})
+
+# Overall average across datasets
+overall_mse_lmer <- mean(mse_lmer_all)
+
+cat("\n\n The mean MSE across all datasets for gamma estimates for LMER: ")
+print(overall_mse_lmer)
+cat("\n\n\n\n TRUE SIGMA_GAMMA: \n")
+
+true_sigma_gamma
+cat("\n FastMix SIGMA_GAMMA: \n")
+Sigma_gamma_mean
+cat("\n FastMix SIGMA_GAMMA: \n")
+Sigma_gamma_mean_lmer
 
 ```
 
- ## DGP with outliers renewed
+## DGP with outliers renewed
 
 
 
@@ -2899,7 +2971,7 @@ for (i in 1:n_sims) {
 run_fastmix_on_dataset_outlier <- function(df, RAND_LIST = c(1,2,3,4), iter = 50) {
   
   df$X00 <- 1
-  df_simple <- df_simple[, c(names(df_simple)[1:(ncol(df_simple)-2)], "X00", names(df_simple)[ncol(df_simple)-1])]
+  df <- df[, c(names(df)[1:(ncol(df)-2)], "X00", names(df)[ncol(df)-1])]
   Des <- df[, c(1, 4, 5, 6, 7)]
   y_values <- df[3]
   
@@ -2917,6 +2989,8 @@ run_fastmix_on_dataset_outlier <- function(df, RAND_LIST = c(1,2,3,4), iter = 50
 }
 
 library(progressr)
+
+plan(multisession, workers = parallel::detectCores() - 1)
 # Start timer
 start_time <- Sys.time()
 print(start_time)
@@ -2946,9 +3020,7 @@ saveRDS(results_list, "results_OUTLIER.RDS")
 ```{r}
 
 
-
-plan(multisession)
-
+plan(multisession, workers = parallel::detectCores() - 1)
 start_time <- Sys.time()
 print(start_time)
 
@@ -3260,7 +3332,12 @@ legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
 ### RESULTS
 
 ```{r}
+true_beta= c(2,1,2,-1)
+
+results_list = readRDS("results_OUTLIER.RDS")
 N_results<- length(results_list)
+
+
 
 # Extract final betas from each dataset
 final_betas <- lapply(1:N_results, function(i) t(results_list[[i]]$beta_history[[50]]))
@@ -3289,6 +3366,8 @@ new_order <- c(4, 1, 2, 3)
 # Reordered covariance matrix
 S_reordered <- S[new_order, new_order]
 Sigma_gamma_mean = S_reordered
+len = length(beta_mean)
+beta_mean = c(beta_mean[len],beta_mean[-c(len)])
 
 
 
@@ -3298,7 +3377,7 @@ cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
 print(Sigma_gamma_mean)
 cat( "\n\n with MSE: ", mean((Sigma_gamma_mean - true_sigma_gamma)^2))
 cat("\n\n The beta estimate: \n")
-cat(beta_mean, "\n\n with MSE: ",mean((beta_mean-c(1,2,-1,2))^2) )
+cat(beta_mean, "\n\n with MSE: ",mean((beta_mean-true_beta)^2) )
 
 
 
@@ -3324,7 +3403,7 @@ cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
 print(Sigma_gamma_mean_lmer)
 cat("\n\n with MSE: ",mean((Sigma_gamma_mean_lmer - true_sigma_gamma)^2) )
 cat("\n\n The beta estimate: \n")
-cat(beta_mean_lmer, "\n\n with MSE: ", mean((beta_mean_lmer-c(2,1,2,-1))^2), "\n\n")
+cat(beta_mean_lmer, "\n\n with MSE: ", mean((beta_mean_lmer-true_beta)^2), "\n\n")
 
 
 
@@ -3348,13 +3427,13 @@ mse_all <- sapply(seq_along(results_list), function(i) {
 })
 
 # Final average across datasets
+cat("\n\n The mean MSE across all datasets for gamma estimates for FM: ")
 print(mean(mse_all))
 
 mse_lmer_all <- sapply(seq_along(lmer_results_list), function(i) {
   
   # TRUE random effects reordered to match lmer ordering (X1, X2, X3, intercept)
-  true_gamma <- simple_re_list_outlier[[i]][ , 
-                                             c("b_X1","b_X2","b_X3","rand_intercept")]
+  true_gamma <- simple_re_list_outlier[[i]][ , c("b_X1","b_X2","b_X3","rand_intercept")]
   
   # EST random effects from lmer
   est_gamma <- as.matrix(ranef(lmer_results_list[[i]])[[1]])
@@ -3368,11 +3447,35 @@ mse_lmer_all <- sapply(seq_along(lmer_results_list), function(i) {
 
 # Overall average across datasets
 overall_mse_lmer <- mean(mse_lmer_all)
+
+cat("\n\n The mean MSE across all datasets for gamma estimates for LMER: ")
 print(overall_mse_lmer)
 
 
+cat("\n\n\n\n TRUE SIGMA_GAMMA: \n")
+
 true_sigma_gamma
+cat("\n FastMix SIGMA_GAMMA: \n")
 Sigma_gamma_mean
+cat("\n LMER SIGMA_GAMMA: \n")
 Sigma_gamma_mean_lmer
+
+
+
+```
+
+
+
+
+```{r}
+
+for(i in 1:1000){
+  test = results_list[[i]]$Sigma_gamma_history[[50]]
+  if(mean((test - true_sigma_gamma)^2)>20){print(i)}
+}
+
+
+
+  results_list[[11]]$Sigma_gamma_history
 ```
 
