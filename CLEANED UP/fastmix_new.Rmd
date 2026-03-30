@@ -1,0 +1,1688 @@
+---
+title: "Fastmix New"
+author: "Meherab"
+date: "2026-02-10"
+output: pdf_document
+---
+# Intro
+
+
+We want to run a version of Fastmix pipeline that can accomodate general longitudinal datasets.
+At first we will use a simple DGP with 1 covariate and a random effect of the intercept and fit a model accordingly.
+
+Here we install libraries
+
+```{r installing_libraries, message=FALSE}
+
+library(tidyverse)
+library(lmerTest)
+library(fastmap)
+library(furrr)   # for future_map2
+library(future)
+
+# Uncomment and run to install fastmix (not needed at the moment)
+#library(devtools)
+#devtools::install_github("terrysun0302/FastMix", build_vignettes = FALSE, force = TRUE)
+library(FastMix)
+library(Matrix)
+library(mclust)
+library(purrr)
+library(nortest)
+library(pbapply)
+library(future.apply)
+library(progressr)
+
+```
+
+
+# Sub Functions
+
+These are subfunctions that we use carry out specific operations
+
+```{r sub_func}
+
+###############################################
+# Stable matrix inverse using SVD
+# ---------------------------------------------
+# This function computes a numerically stable
+# inverse by truncating small singular values.
+# Used to avoid instability when matrices are
+# ill-conditioned (very common in LMMs).
+###############################################
+
+rsolve = function (X, min.cond.num = 1e-06) 
+{
+    # Singular Value Decomposition
+    # X = U D V^T
+    o <- svd(X)
+    
+    # Threshold for smallest allowable eigenvalue
+    lambda <- min.cond.num * max(o$d)
+    
+    # Truncate small singular values
+    dd <- pmax(o$d, lambda)
+    
+    # Invert singular values
+    if (length(dd) == 1) {
+        dd.inv <- 1/dd
+    } else {
+        dd.inv <- diag(1/dd)
+    }
+    
+    # Return stable inverse: V D^{-1} U^T
+    return(o$v %*% dd.inv %*% t(o$u))
+}
+
+
+
+#########################################################
+# subject_fun()
+# -------------------------------------------------------
+# Computes subject-specific quantities needed for
+# generalized least squares (GLS) estimation:
+#
+# - Marginal covariance of Y_i by calculating V_i
+# - Inverse covariance using Woodbury identity
+# - Components for global WLS estimation of beta
+#########################################################
+
+subject_fun <- function(i, Y, Des, DZ, Sigma_gamma, sigma2, idx_list,
+                        min.cond.num = 1e-6) {
+
+  # Indices for subject i
+  idx <- idx_list[[i]]
+  
+  # Subject-specific response vector
+  Yi <- Y[idx]
+  
+  # Fixed-effects design matrix for subject i
+  Xi <- as.matrix(Des[idx, -1])
+  
+  # Random-effects design matrix for subject i
+  Zi <- as.matrix(DZ[idx, -1])
+  
+  # Number of observations (timepoints) for subject i
+  ni <- nrow(Zi)
+
+  # Marginal covariance of Y_i: WE DO NOT USE THIS SO IT IS COMMENTED OUT
+  # Var(Y_i) = Z_i Σ_γ Z_i^T + σ² I
+  #Sigma_Yi <- Zi %*% Sigma_gamma %*% t(Zi) + sigma2 * diag(ni)
+
+  #################################################
+  # Woodbury identity to compute Σ_Yi^{-1}
+  #
+  # (σ²I + Z Σ Z^T)^{-1}
+  # = (1/σ²)I − (1/σ⁴) Z (Σ^{-1} + (1/σ²)Z^TZ)^{-1} Z^T
+  #################################################
+
+  # Inner matrix in Woodbury identity
+  inner <- rsolve(Sigma_gamma) + (1 / sigma2) * (t(Zi) %*% Zi)
+  
+  # Invert inner matrix
+  W <- rsolve(inner, min.cond.num = min.cond.num)
+
+  # Inverse of marginal covariance of Y_i
+  Vi_inv <- (1 / sigma2) * diag(ni) -
+            (1 / sigma2^2) * Zi %*% W %*% t(Zi)
+
+  # Components for global GLS / WLS estimation of beta
+  # p1 = X_i^T V_i^{-1} X_i
+  # p2 = X_i^T V_i^{-1} Y_i
+  p1 <- t(Xi) %*% Vi_inv %*% Xi
+  p2 <- t(Xi) %*% Vi_inv %*% Yi
+
+  # Return all subject-level quantities
+  list(
+    #Sigma_Yi = Sigma_Yi,
+    Vi_inv = Vi_inv,   
+    p1 = p1,
+    p2 = p2,
+    Xi = Xi,
+    Zi = Zi,
+    Yi = Yi,
+    idx = idx
+  )
+}
+
+
+
+#########################################################
+# gamma_fun()
+# -------------------------------------------------------
+# Computes the conditional (posterior) distribution of
+# subject-specific random effects:
+#
+# - E[γ_i | Y_i]  (BLUP / EBLUP)
+# - Var(γ_i | Y_i)
+# - Second moment E[γ_i γ_i^T | Y_i]
+#
+# This corresponds to the E-step in an EM algorithm.
+#########################################################
+
+gamma_fun <- function(i, subject_results, Y, Des, beta, Sigma_gamma) {
+
+  # Extract subject-specific quantities
+  Zi <- subject_results[[i]]$Zi
+  Vi_inv <- subject_results[[i]]$Vi_inv
+  idx <- subject_results[[i]]$idx
+
+  # Residual after removing fixed effects
+  # r_i = Y_i − X_i β
+  resid_i <- Y[idx,1] - as.matrix(Des[idx, -1]) %*% beta
+
+  #################################################
+  # Posterior mean of random effects:
+  #
+  # E[γ_i | Y_i] =
+  # Σ_γ Z_i^T V_i^{-1} (Y_i − X_i β)
+  #################################################
+
+  Ui <- Sigma_gamma %*% t(Zi) %*% Vi_inv
+  gamma_i <- Ui %*% resid_i
+
+  #################################################
+  # Posterior covariance of random effects:
+  #
+  # Var(γ_i | Y_i) =
+  # Σ_γ − Σ_γ Z_i^T V_i^{-1} Z_i Σ_γ
+  #################################################
+
+  Sigma_Ui <- Sigma_gamma - Ui %*% Zi %*% Sigma_gamma
+
+  #################################################
+  # Second moment:
+  # E[γ_i γ_i^T | Y_i]
+  # Needed to update Σ_γ in the M-step
+  #################################################
+
+  gamma_cov_i <- gamma_i %*% t(gamma_i) + Sigma_Ui
+
+  list(
+    gamma_i = gamma_i,
+    gamma_cov_i = gamma_cov_i,
+    Sigma_Ui = Sigma_Ui
+  )
+}
+
+```
+
+
+# Main Function
+
+This our main function. Important note that the $\hat\Sigma_{\gamma}$ estimates will have the intercept as the last column/row of this covariance matrix.
+
+```{r main_function}
+
+#########################################################
+# fastmix_iterative()
+# -------------------------------------------------------
+# Iterative EM-style mixed model estimation for
+# longitudinal data:
+#
+# - Uses GLS for fixed effects
+# - Uses BLUPs for random effects
+# - Updates Σ_γ and σ² via moment equations
+
+
+
+# IT SHOULD BE NOTED THAT GIVE HOW THIS IS SET UP THE COVARIANCE MATRIX
+# OF THE RANDOM EFFECTS HAS THE INTERCEPT AS THE LAST COLUMN!
+#########################################################
+
+fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
+
+  Y = as.matrix(Y)
+  N <- length(Y)
+  
+  # Fixed-effect covariates (excluding ID column)
+  covariates <- colnames(Des)[-1]
+  p <- length(covariates)
+  
+  # If all covariates are random effects
+  if(length(random) == 1 && random == "all") {
+    random <- 1:p
+  }
+  
+  # Random-effects design matrix (ID + random covariates)
+  DZ <- Des[, c(1, random + 1)]
+  dz <- as.data.frame(DZ)
+  colnames(dz)[1] <- "ID"
+  
+  # Number of subjects
+  m <- length(unique(Des[,1]))
+  ID <- sort(unique(Des[,1]))
+  
+
+  # Build index list mapping subjects to rows
+
+  number <- dz %>% 
+    dplyr::group_by(ID) %>% 
+    dplyr::summarize(num = dplyr::n(), .groups = "drop") %>% 
+    dplyr::mutate(start = dplyr::lag(cumsum(num), default = 0), 
+                  end = cumsum(num))
+  
+  number <- cumsum(number$num)
+  number <- c(0, number)
+  
+  idx_list <- lapply(seq_len(m), function(i) {
+    (number[i] + 1):number[i + 1]
+  })
+  
+
+  # Initial parameter estimates
+  #################################################
+
+  # Initial fixed effects via OLS
+  coef.fix <- lm.fit(x = as.matrix(Des[, -1]), y = as.matrix(Y))$coefficients
+  
+  # Initial residual variance
+  resid_global <- Y - as.matrix(Des[, -1]) %*% coef.fix
+  sigma2_init <- as.numeric(var(resid_global))
+  
+  # Initial random-effects covariance
+  p_rand <- length(random)
+  Sigma_gamma_init <- diag(0.1, p_rand)
+  
+  # Storage across EM iterations
+  beta_history <- vector("list", iter)
+  Sigma_gamma_history <- vector("list", iter)
+  gamma_history <- vector("list", iter)
+  sigma2_history <- vector("list", iter)
+  
+  
+  
+  
+  #################################################
+  # EM iterations
+  #################################################
+
+  for(it in 1:iter) {
+    
+    # Subject-specific covariance inverses and GLS pieces
+    subject_results <- lapply(seq_len(m), function(i) {
+      subject_fun(i, Y, Des, DZ, Sigma_gamma_init, sigma2_init, idx_list)
+    })
+    
+    #################################################
+    # M-step: fixed effects via GLS
+    #################################################
+
+    p1_sum <- Reduce("+", lapply(subject_results, `[[`, "p1"))
+    p2_sum <- Reduce("+", lapply(subject_results, `[[`, "p2"))
+    beta_wls <- solve(p1_sum) %*% p2_sum
+    
+    #################################################
+    # E-step: random effects
+    #################################################
+
+    gamma_out <- lapply(seq_len(m), function(i) {
+      gamma_fun(
+        i = i,
+        subject_results = subject_results,
+        Y = Y,
+        Des = Des,
+        beta = beta_wls,
+        Sigma_gamma = Sigma_gamma_init
+      )
+    })
+    
+    #################################################
+    # M-step: update Σ_γ
+    #################################################
+
+    Sigma_gamma_new <- Reduce("+", lapply(gamma_out, `[[`, "gamma_cov_i")) / m
+    
+    # Enforce symmetry and positive definiteness
+    Sigma_gamma_new <- (Sigma_gamma_new + t(Sigma_gamma_new)) / 2
+    eig <- eigen(Sigma_gamma_new)
+    eig$values[eig$values < 1e-6] <- 1e-6
+    Sigma_gamma_new <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+    
+    #################################################
+    # M-step: update σ²
+    #################################################
+    
+    # Sum the squares first and we take the average after
+    ssq <- 0
+    for (i in 1:m) {
+      Xi <- subject_results[[i]]$Xi
+      Yi <- subject_results[[i]]$Yi
+      Zi <- subject_results[[i]]$Zi
+      g  <- gamma_out[[i]]$gamma_i
+      Sigma_Ui <- gamma_out[[i]]$gamma_cov_i - g %*% t(g)
+    
+      # Expected squared residual
+      resid_mean <- Yi - Xi %*% beta_wls - Zi %*% g
+      ssq <- ssq +
+        sum(resid_mean^2) +
+        sum(diag(Zi %*% Sigma_Ui %*% t(Zi)))
+    }
+
+    sigma2_new <- ssq / N
+    
+    #################################################
+    # Store iteration results
+    #################################################
+
+    beta_history[[it]] <- beta_wls
+    Sigma_gamma_history[[it]] <- Sigma_gamma_new
+    gamma_history[[it]] <- lapply(gamma_out, `[[`, "gamma_i")
+    sigma2_history[[it]] <- sigma2_new
+    
+    # Update parameters for next iteration
+    Sigma_gamma_init <- Sigma_gamma_new
+    sigma2_init <- sigma2_new
+  }
+  
+  #################################################
+  # Return full estimation history
+  #################################################
+  
+  return(list(
+    beta_history = beta_history,
+    Sigma_gamma_history = Sigma_gamma_history,
+    gamma_history = gamma_history,
+    sigma2_history = sigma2_history
+  ))
+}
+
+#Important note that the $\hat\Sigma_{\gamma}$ estimates will have the intercept
+#as the last column/row of this covariance matrix.
+
+
+```
+
+
+# Data Generating Process
+
+We create simple DGP with no outliers.
+
+
+```{r func_dgp}
+
+
+
+generate_longitudinal <- function(
+  n_subjects = 50,
+  n_timepoints = 5,
+  n_covariates = 2,
+  cov_trends = rep(0, 3),
+  beta = rep(1, 3),
+  random_intercept_sd = 0.5,
+  random_slope_sd = rep(0.5, 3),
+  noise_sd = 1,
+  include_intercept = TRUE,
+  baseline_intercept = 0
+) {
+  
+  # --- checks ---
+  if(length(cov_trends) != n_covariates) stop("cov_trends must match n_covariates")
+  if(length(beta) != n_covariates) stop("beta must match n_covariates")
+  if(length(random_slope_sd) != n_covariates) stop("random_slope_sd must match n_covariates")
+  
+  # Storage
+  rows <- n_subjects * n_timepoints
+  df <- data.frame(
+    subject = rep(NA, rows),
+    time = rep(NA, rows),
+    Y = rep(NA, rows),
+    matrix(NA, nrow = rows, ncol = n_covariates)
+  )
+  colnames(df)[4:(3+n_covariates)] <- paste0("X", 1:n_covariates)
+  
+  # --- Generate random effects ---
+  b0 <- rnorm(n_subjects, 0, random_intercept_sd)
+  random_slopes <- sapply(random_slope_sd, function(sd) rnorm(n_subjects, 0, sd))
+  colnames(random_slopes) <- paste0("b_", paste0("X",1:n_covariates))
+  
+  # --- Fill dataset ---
+  row_counter <- 1
+  
+  for (subj in 1:n_subjects) {
+    for (t in 1:n_timepoints) {
+      
+      # Generate covariates
+      X <- rnorm(n_covariates, mean = cov_trends * (t-1), sd = 1)
+      
+      # Linear predictor
+      intercept <- if(include_intercept) baseline_intercept else 0
+      
+      rand_eff <- sum(random_slopes[subj, ] * X)
+      
+      Y <- intercept + 
+        b0[subj] + 
+        sum(beta * X) + 
+        rand_eff + 
+        rnorm(1, 0, noise_sd)
+      
+      # Write row
+      df[row_counter, ] <- c(subj, t, Y, X)
+      row_counter <- row_counter + 1
+    }
+  }
+  
+  # --- True subject-specific effects ---
+  # fixed + random slopes
+  # true_slopes <- sweep(random_slopes, 2, beta, "+")
+  # colnames(true_slopes) <- paste0("slope_X", 1:n_covariates)
+  # 
+  # true_effects <- data.frame(
+  #   subject = 1:n_subjects,
+  #   intercept = baseline_intercept + b0,
+  #   true_slopes
+  # )
+  # 
+  # --- Return EVERYTHING useful ---
+  return(list(
+    data = df,
+    random_effects = data.frame(
+      subject = 1:n_subjects,
+      rand_intercept = b0,
+      random_slopes)
+    # ,
+    # true_effects = true_effects,
+    # params = list(
+    #   beta = beta,
+    #   random_intercept_sd = random_intercept_sd,
+    #   random_slope_sd = random_slope_sd,
+    #   noise_sd = noise_sd,
+    #   cov_trends = cov_trends,
+    #   baseline_intercept = baseline_intercept
+    # )
+  ))
+}
+```
+
+## Running DGP
+
+We are generating 1000 datasets of one variable X1 with a $\beta_1$ = 1 and $\beta_1$ = 0 = 2
+Random intercept SD = 1
+Random Slope X1 SD = 0.25
+$\sigma^2$ = 1
+
+```{r}
+
+n_sims <- 1000
+sim_list <- vector("list", n_sims)
+simple_re_list <- vector("list", n_sims)
+true_effects_list <- vector("list", n_sims)
+random_intercept_sd = 1 # random intercept SD
+random_slope_sd = c(0.25) #random slope SD
+
+
+for (i in 1:n_sims) {
+  set.seed(123 + i)
+  
+# Generate one longitudinal dataset according to the DGP
+  sim <- generate_longitudinal(
+    n_subjects = 50,        # number of subjects
+    n_timepoints = 10,     # number of repeated measures per subject
+    n_covariates = 1,      # number of time-varying covariates
+    cov_trends = c(2.25),  # linear time trend in the covariate
+    beta = c(1),           # fixed-effect slope
+    random_intercept_sd = random_intercept_sd,     # SD of random intercept
+    random_slope_sd = random_slope_sd,   # SD of random slope
+    noise_sd = 1,                # residual error SD
+    include_intercept = TRUE,    # include fixed intercept
+    baseline_intercept = 2       # population-level intercept
+  )
+  
+  # Store the simulated longitudinal data frame
+  sim_list[[i]] <- sim$data
+  
+  # Store the true subject-specific random effects
+  # (used to assess recovery of Σ_γ)
+  simple_re_list[[i]] <- sim$random_effects
+  
+  # Store true subject-specific effects (if enabled)
+  true_effects_list[[i]] <- sim$true_effects
+}
+
+```
+
+
+#### Sanity check
+
+This is just to make sure my functions are running on a singular dataset before i run on all datasets.
+```{r sanity_check}
+
+
+df_simple = sim_list[[335]]
+  RAND_LIST = c(1,2)
+  df_simple$X00 = 1
+  Des = df_simple[,c(1,4,5)]
+  y_values = df_simple[3]
+  
+  
+  random = RAND_LIST
+  DZ <- Des[, c(1, random + 1)]
+  robust = "FastMix"
+  min.cond.num = 1e-6
+  Y = as.matrix(y_values)
+  bias = 2
+  independent = TRUE
+  test = 1
+  
+fm_test = fastmix_iterative(Y = y_values,Des= Des, random = c(1,2),iter = 50)
+
+lmer_model <- lmer(Y ~ 1+ X1 + (1 + X1| subject), data = df_simple)
+summary(lmer_model)
+
+```
+
+
+```{r Wrapper_for_running}
+############################################################
+# Wrapper to run FastMix on a single longitudinal dataset
+############################################################
+
+run_fastmix_on_dataset <- function(df, RAND_LIST = c(1,2), iter = 50) {
+  
+  # Add an explicit intercept column
+  # X00 acts as the fixed intercept in the design matrix
+  df$X00 <- 1
+  
+  # Construct the design matrix (Des)
+  # Des is used internally by FastMix to build X_i and Z_i
+  Des <- df[, c(1, 4, 5)]
+  
+  # Extract response variable Y
+  y_values <- df[3]
+  Y <- as.matrix(y_values)
+  
+  # Indices of random-effect columns in Des
+  random <- RAND_LIST
+  
+ 
+  out <- fastmix_iterative(
+    Y = Y,
+    Des = Des,
+    random = random,
+    iter = iter
+  )
+
+  return(out)
+}
+
+```
+
+# Running on all Datasets
+
+## FM
+We run our Fastmix on 1000 datasets
+
+```{r parallel_code}
+plan(multisession, workers = parallel::detectCores() - 2)
+# Start timer
+start_time <- Sys.time()
+print(start_time)
+
+with_progress({
+  p <- progressor(along = sim_list)
+
+  results_list <- future_lapply(sim_list, function(df) {
+    p()                              # advance progress bar
+    run_fastmix_on_dataset(df)       # run function
+  })
+})
+
+# End timer
+end_time <- Sys.time()
+
+# Time elapsed
+elapsed <- end_time - start_time
+print(elapsed)
+
+saveRDS(results_list, "RDS_RESULTS_SIMPLE_ONE_COV_FM.RDS")
+```
+
+
+## LMER
+
+Here we run lmer on the 1000 datasets.
+
+```{r lmer_simple_DGP}
+
+run_lmer_on_dataset <- function(df) {
+  
+  df$Y <- as.numeric(df$Y)
+  
+  lmer_model <- lmer(
+    Y ~ 1 + X1 + (1 + X1| subject),
+    data = df,
+    REML = TRUE
+  )
+  
+  return(lmer_model)
+}
+
+
+
+
+plan(multisession, workers = parallel::detectCores() - 2)
+
+start_time <- Sys.time()
+print(start_time)
+
+with_progress({
+  p <- progressor(along = sim_list)
+
+  lmer_results_list <- future_lapply(sim_list, function(df) {
+    p()
+    run_lmer_on_dataset(df)
+  })
+})
+end_time <- Sys.time()
+time_needed = end_time-start_time
+print(time_needed)
+
+
+saveRDS(lmer_results_list, "RESULTS_SIMPLE_ONE_COV_LMER.RDS")
+
+```
+
+
+# Plots
+
+## FASTMIX PLOTS
+
+### Beta Plot
+Plot of the Beta MSE over 50 iterations
+
+
+
+```{r read_in_saved_results}
+results_list = readRDS("RDS_RESULTS_SIMPLE_ONE_COV_FM.RDS")
+lmer_results_list = readRDS("RESULTS_SIMPLE_ONE_COV_LMER.RDS")
+random_intercept_sd = 1 # random intercept SD
+random_slope_sd = c(0.25) #random slope SD
+```
+
+
+```{r plots_simple_new_fast, fig.height=8, fig.width=8}
+# ------------------------------
+# 1. True beta vector
+# ------------------------------
+
+true_beta <- c(1, 2)
+
+# ------------------------------
+# 2. Function to compute MSE per iteration
+# ------------------------------
+compute_error_path <- function(beta_history, true_beta) {
+  sapply(beta_history, function(b) {
+    b <- as.numeric(b[,1])   # convert 4x1 matrix to vector
+    mean((b - true_beta)^2)# MSE
+    #sqrt(sum((b - true_beta)^2))# norm
+    
+    # To use Euclidean norm instead, uncomment the line below:
+     #sqrt(sum((b - true_beta)^2))
+  })
+}
+
+# ------------------------------
+# 3. Compute MSE trajectories for all datasets
+# ------------------------------
+error_list <- lapply(results_list, function(res) {
+  compute_error_path(res$beta_history, true_beta)
+})
+
+# ------------------------------
+# 4. Plotting all trajectories
+# ------------------------------
+# Start with first dataset to create plot frame
+plot(error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "MSE",
+     ylim = range(unlist(error_list)),  # ensure all lines fit
+     main = "Convergence of β Estimates Across Datasets")
+
+# Overlay remaining datasets with semi-transparent lines
+for(i in 2:length(error_list)) {
+  lines(error_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# ------------------------------
+# 5. Plot average MSE across datasets
+# ------------------------------
+avg_err <- Reduce("+", error_list) / length(error_list)
+lines(avg_err, col = "red", lwd = 3)
+
+# Optional: add legend
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
+
+```
+
+
+### Sigma Gamma Plot
+
+```{r sig_gam_plot, fig.height=8, fig.width=8}
+
+# True Σγ from DGP
+Sigma_gamma_true <- diag(c(random_slope_sd^2,random_intercept_sd^2))
+
+# Function to compute Frobenius norm errors over iterations
+compute_sigma_gamma_error <- function(Sigma_gamma_history, Sigma_true) {
+  sapply(Sigma_gamma_history, function(Sigma_est) {
+    #sqrt(sum((Sigma_est - Sigma_true)^2))  # Frobenius norm
+     mean((Sigma_est - Sigma_true)^2)      # optional: MSE instead
+  })
+}
+
+# Compute for all datasets
+sigma_gamma_error_list <- lapply(results_list, function(res) {
+  compute_sigma_gamma_error(res$Sigma_gamma_history, Sigma_gamma_true)
+})
+
+# Plot first dataset to create frame
+plot(sigma_gamma_error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "MSE Err",
+     ylim = c(0,1),
+     main = "Convergence of Σγ Estimates Across Datasets")
+
+# Overlay remaining datasets
+for(i in 2:length(sigma_gamma_error_list)) {
+  lines(sigma_gamma_error_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average error across datasets
+avg_sigma_err <- Reduce("+", sigma_gamma_error_list) / length(sigma_gamma_error_list)
+lines(avg_sigma_err, col = "red", lwd = 3)
+
+# Optional legend
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
+
+
+
+```
+
+### sigma^2 plots
+
+Trajectories of the $\sigma^2$.
+
+```{r traj_sigma2, fig.height=8, fig.width=8}
+
+# Convert sigma2_history list of each dataset into numeric vector
+sigma2_trajectories <- lapply(results_list, function(res) {
+  unlist(res$sigma2_history)
+})
+# Plot the first dataset trajectory
+plot(sigma2_trajectories[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = expression(sigma^2),
+     ylim = range(unlist(sigma2_trajectories)),
+     main = expression("Trajectory of"~sigma^2~"across all datasets"))
+
+# Overlay remaining datasets
+for(i in 2:length(sigma2_trajectories)) {
+  lines(sigma2_trajectories[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average trajectory across datasets
+avg_sigma2 <- Reduce("+", sigma2_trajectories) / length(sigma2_trajectories)
+lines(avg_sigma2, col = "red", lwd = 3)
+
+# True σ² from DGP
+true_sigma2 <- 1
+abline(h = true_sigma2, col = "blue", lty = 2)
+
+# Legend
+legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
+       col = c(rgb(0,0,0,0.2), "red", "blue"), lwd = c(1.5,3,2), lty = c(1,1,2))
+
+
+```
+
+
+
+
+
+### gamma indiv
+
+Average of the mean MSE across 50 subjects per dataset. This plot takes a while to run
+
+```{r gamma_individual, fig.height=8, fig.width=8}
+# ------------------------------
+# 1. Function to compute average error per iteration for dataset
+# ------------------------------
+compute_avg_subject_gamma_error <- function(gamma_history, true_re_df) {
+  # gamma_history: list of iterations, each element is list of subject vectors
+  # true_re_df: data frame with columns: rand_intercept, b_X1, b_X2, b_X3
+  n_iter <- length(gamma_history)
+  n_subjects <- nrow(true_re_df)
+  
+  sapply(1:n_iter, function(it) {
+    # For each subject, compute squared error
+    errors <- sapply(1:n_subjects, function(subj_idx) {
+      gamma_est <- as.numeric(gamma_history[[it]][[subj_idx]])
+      gamma_true <- as.numeric(true_re_df[subj_idx, -1])  # drop subject column
+      mean((gamma_est - gamma_true)^2)  # MSE per subject
+      #sqrt(sum((gamma_est - gamma_true)^2))  #norm
+    })
+    mean(errors)  # average over all subjects
+  })
+}
+
+# ------------------------------
+# 2. Compute average errors for all datasets
+# ------------------------------
+
+gamma_error_list <- lapply(1:length(results_list), function(i) {
+  compute_avg_subject_gamma_error(
+    gamma_history = results_list[[i]]$gamma_history,
+    true_re_df = simple_re_list[[i]]
+  )
+})
+
+# ------------------------------
+# 3. Plotting all datasets together
+# ------------------------------
+# Plot first dataset to create plot frame
+plot(gamma_error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "Average MSE per subject",
+     ylim = range(unlist(gamma_error_list)),
+     main = "Convergence of γ Estimates Across Datasets")
+
+# Overlay remaining datasets with semi-transparent lines
+for(i in 2:length(gamma_error_list)) {
+  lines(gamma_error_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average across datasets
+avg_gamma_err <- Reduce("+", gamma_error_list) / length(gamma_error_list)
+lines(avg_gamma_err, col = "red", lwd = 3)
+
+# Add legend
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5, 3))
+
+```
+
+
+
+## Final Results
+
+
+
+```{r fin_results}
+
+
+
+true_beta = c(2,1) # intercept beta comes first
+true_sigma_gamma = diag(c(1,0.25)^2)
+## FASTMIX
+
+N_results<- length(results_list)
+
+# Extract final betas from each dataset
+final_betas <- lapply(1:N_results, function(i) t(results_list[[i]]$beta_history[[50]]))
+beta_mat <- do.call(rbind, final_betas)
+beta_mean <- colMeans(beta_mat)
+
+
+
+
+# Extract final Sigma_gamma from each dataset
+final_Sigmas <- lapply(1:N_results, function(i) results_list[[i]]$Sigma_gamma_history[[50]])
+Sigma_array <- simplify2array(final_Sigmas)
+Sigma_gamma_mean <- apply(Sigma_array, c(1, 2), mean)
+
+
+final_sigma2 <- sapply(1:N_results, function(i) results_list[[i]]$sigma2_history[[50]])
+sigma2_mean <- mean(final_sigma2)
+
+
+# Current covariance matrix
+S <- Sigma_gamma_mean
+
+# Desired order: move row/col 4 to the front
+new_order <- c(2, 1)
+
+# Reordered covariance matrix
+S_reordered <- S[new_order, new_order]
+Sigma_gamma_mean = S_reordered
+len_beta <- length(beta_mean)
+beta_mean <- c(beta_mean[len_beta], beta_mean[-len_beta])
+
+cat("\n\n\ FOR FASTMIX \n")
+cat("\n\n The Sigma^2 estimate: \n", sigma2_mean)
+cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
+print(Sigma_gamma_mean)
+cat( "\n\n with MSE: ", mean((Sigma_gamma_mean-true_sigma_gamma)^2 ))
+cat("\n\n The beta estimate: \n")
+cat(beta_mean, "\n\n with MSE: ", mean((beta_mean-true_beta)^2 ))
+
+
+### LMER
+
+N_results <- length(lmer_results_list)
+fixed_effects_list <- lapply(1:N_results, function(i) fixef(lmer_results_list[[i]]))
+Sigma_gamma_list <- lapply(1:N_results, function(i) as.matrix(VarCorr(lmer_results_list[[i]])$subject))
+sigma2_list <- sapply(1:N_results, function(i) sigma(lmer_results_list[[i]])^2)
+
+
+fixed_mat <- do.call(rbind, lapply(fixed_effects_list, t))
+beta_mean_lmer <- colMeans(fixed_mat)
+
+Sigma_array <- simplify2array(Sigma_gamma_list)
+Sigma_gamma_mean_lmer <- apply(Sigma_array, c(1, 2), mean)
+sigma2_mean_lmer <- mean(sigma2_list)
+
+
+cat("\n\\n\n\n\n\ FOR LMER \n")
+cat("\n\n The Sigma^2 estimate: \n", sigma2_mean_lmer)
+cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
+print(Sigma_gamma_mean_lmer)
+cat("\n\n with MSE: ", mean((Sigma_gamma_mean_lmer-true_sigma_gamma))^2)
+cat("\n\n The beta estimate: \n")
+cat(beta_mean_lmer, "\n\n with MSE: ", mean((beta_mean_lmer-true_beta)^2),"\n\n")
+
+
+
+
+
+# # Current covariance matrix
+# S <- Sigma_gamma_mean
+# 
+# # Desired order: move row/col 4 to the front
+# new_order <- c(4, 1, 2, 3)
+# 
+# # Reordered covariance matrix
+# S_reordered <- S[new_order, new_order]
+# Sigma_gamma_mean = S_reordered
+
+
+
+
+
+mse_all <- sapply(seq_along(results_list), function(i) {
+  
+  # true REs reordered to match fastmix ordering
+  true_gamma <- simple_re_list[[i]][ , c("b_X1","rand_intercept")]
+  
+  # estimated REs at iteration 50
+  est_gamma_list <- results_list[[i]]$gamma_history[[50]]
+  est_gamma <- do.call(rbind, est_gamma_list)
+  
+  # MSE per subject
+  mse_subject <- rowMeans((est_gamma - true_gamma)^2)
+  
+  # average MSE for this dataset
+  mean(mse_subject)
+})
+
+# Final average across datasets
+cat("\n\n The mean MSE across all datasets for gamma estimates for FM: ")
+print(mean(mse_all))
+
+mse_lmer_all <- sapply(seq_along(lmer_results_list), function(i) {
+  
+  # TRUE random effects reordered to match lmer ordering (X1, X2, X3, intercept)
+  true_gamma <- simple_re_list[[i]][ , 
+                                      c("b_X1","rand_intercept")]
+  
+  # EST random effects from lmer
+  est_gamma <- as.matrix(ranef(lmer_results_list[[i]])[[1]])
+  est_gamma <- est_gamma[ , c("X1","(Intercept)")]
+  # Subject-level MSE
+  mse_subject <- rowMeans((est_gamma - true_gamma)^2)
+  
+  # Dataset-level MSE
+  mean(mse_subject)
+})
+
+# Overall average across datasets
+overall_mse_lmer <- mean(mse_lmer_all)
+
+cat("\n\n The mean MSE across all datasets for gamma estimates for LMER: ")
+print(overall_mse_lmer)
+cat("\n\n\n\n TRUE SIGMA_GAMMA: \n")
+
+true_sigma_gamma
+cat("\n FastMix SIGMA_GAMMA: \n")
+Sigma_gamma_mean
+cat("\n LMER SIGMA_GAMMA: \n")
+Sigma_gamma_mean_lmer
+
+```
+# OUTLIER DGP
+We create a dataset with 3 variables.
+$\beta_0$ =2
+$\beta_1$ = 1
+$\beta_2$ = 2
+$\beta_3$ = -1
+
+Random Intercept = 1
+Random Slope SD = 0.25, 0.75, 0.5 [$X_1$,$X_2$,$X_3$]
+
+Here we create a dataset with outliers of 30% in variable $X_1$ of the "mix" variant.
+This shifts the random slope, random intercept, Y-values and X-values by a magnitude of its SD.
+
+```{r dgp_outlier_v2}
+generate_longitudinal_with_outliers <- function(
+  # --- data-generating parameters (identical to generate_longitudinal) ---
+  n_subjects = 50,
+  n_timepoints = 10,
+  n_covariates = 3,
+  cov_trends = c(2.25, -1.25, 0.65),
+  beta = c(1, 2, -1),
+  random_intercept_sd = 1,
+  random_slope_sd = c(0.25, 0.75, 0.5),
+  noise_sd = 1,
+  include_intercept = TRUE,
+  baseline_intercept = 2,
+  
+  # --- outlier parameters (your additions) ---
+  outlier_prop = 0,
+  outlier_type = "mix",    # slope, intercept, covariate, response, mix
+  outlier_magnitude = 2,
+  outlier_covariates = NULL,
+  seed = NULL
+) {
+  if (!is.null(seed)) set.seed(seed)
+  
+  # ---- SAME checks as original ----
+  if(length(cov_trends) != n_covariates) stop("cov_trends must match n_covariates")
+  if(length(beta) != n_covariates) stop("beta must match n_covariates")
+  if(length(random_slope_sd) != n_covariates) stop("random_slope_sd must match n_covariates")
+  
+  rows <- n_subjects * n_timepoints
+  df <- data.frame(
+    subject = rep(NA, rows),
+    time = rep(NA, rows),
+    Y = rep(NA, rows),
+    matrix(NA, nrow = rows, ncol = n_covariates)
+  )
+  colnames(df)[4:(3+n_covariates)] <- covariate_names <- paste0("X", 1:n_covariates)
+  
+  # ---- random effects (same as original) ----
+  b0 <- rnorm(n_subjects, 0, random_intercept_sd)
+  random_slopes <- sapply(random_slope_sd, function(sd) rnorm(n_subjects, 0, sd))
+  colnames(random_slopes) <- paste0("b_", covariate_names)
+  
+  # ---- main data loop (identical to original) ----
+  row_counter <- 1
+  for (subj in 1:n_subjects) {
+    for (t in 1:n_timepoints) {
+      
+      X <- rnorm(n_covariates, mean = cov_trends * (t-1), sd = 1)
+      
+      intercept_val <- if(include_intercept) baseline_intercept else 0
+      
+      re <- sum(random_slopes[subj, ] * X)
+      Y <- intercept_val + b0[subj] + sum(beta * X) + re + rnorm(1, 0, noise_sd)
+      
+      df[row_counter, ] <- c(subj, t, Y, X)
+      row_counter <- row_counter + 1
+    }
+  }
+  
+  # ---- Outlier logic ----
+  outlier_subjects <- sample(n_subjects, size = round(outlier_prop * n_subjects))
+  df$outlier_flag <- df$subject %in% outlier_subjects
+  
+  if (length(outlier_subjects) > 0) {
+    
+    if (is.null(outlier_covariates)) outlier_covariates <- covariate_names
+    
+    for (sid in outlier_subjects) {
+      rows_sid <- df$subject == sid
+      
+      # extreme slope effects → modify random slopes
+      if (outlier_type %in% c("slope","mix")) {
+        for (j in seq_len(n_covariates)) {
+          jump <- outlier_magnitude * random_slope_sd[j]
+          random_slopes[sid, j] <- random_slopes[sid, j] + sample(c(-1,1),1)*jump
+        }
+      }
+      
+      # extreme intercepts
+      if (outlier_type %in% c("intercept","mix")) {
+        b0[sid] <- b0[sid] + sample(c(-1,1),1) * outlier_magnitude * random_intercept_sd
+      }
+      
+      # covariate contamination
+      if (outlier_type %in% c("covariate","mix")) {
+        for (v in outlier_covariates) {
+          sdv <- sd(df[[v]])
+          df[rows_sid, v] <- df[rows_sid, v] +
+            sample(c(-1,1),1) * outlier_magnitude * sdv
+        }
+      }
+      
+      # response contamination
+      if (outlier_type %in% c("response","mix")) {
+        df$Y[rows_sid] <- df$Y[rows_sid] +
+          rnorm(sum(rows_sid), 0, outlier_magnitude * noise_sd)
+      }
+    }
+  }
+  
+  # ---- Random effects output (same format as original) ----
+  re_df <- data.frame(
+    subject = 1:n_subjects,
+    rand_intercept = b0,
+    random_slopes
+  )
+  
+  return(list(
+    data = df,
+    random_effects = re_df
+  ))
+}
+
+
+# edirty_sim <- generate_longitudinal_with_outliers(
+#   outlier_prop = 0.30,
+#   outlier_type = "mix",
+#   outlier_magnitude = 3,
+#   outlier_covariates = "X1",
+# 
+#   # everything below matches your clean DGP exactly:
+#   n_subjects = 50,
+#   n_timepoints = 10,
+#   n_covariates = 3,
+#   cov_trends = c(2.25, -1.25, 0.65),
+#   beta = c(1, 2, -1),
+#   random_intercept_sd = 1,
+#   random_slope_sd = c(0.25, 0.75, 0.5),
+#   noise_sd = 1,
+#   include_intercept = TRUE,
+#   baseline_intercept = 2
+# )
+# 
+# df = edirty_sim$data
+
+
+n_sims = 1000
+sim_list_outlier = list()
+simple_re_list_outlier = list()
+for (i in 1:n_sims) {
+  set.seed(123 + i)
+  
+  sim <- generate_longitudinal_with_outliers(
+    outlier_prop = 0.30,
+  outlier_type = "mix",
+  outlier_magnitude = 2,
+  outlier_covariates = "X1",
+
+  # everything below matches your clean DGP exactly:
+  n_subjects = 50,
+  n_timepoints = 10,
+  n_covariates = 3,
+  cov_trends = c(2.25, -1.25, 0.65),
+  beta = c(1, 2, -1),
+  random_intercept_sd = 1,
+  random_slope_sd = c(0.25, 0.75, 0.5),
+  noise_sd = 1,
+  include_intercept = TRUE,
+  baseline_intercept = 2
+  )
+  
+  sim_list_outlier[[i]] <- sim$data
+  simple_re_list_outlier[[i]] <- sim$random_effects
+}
+
+
+
+
+
+```
+
+
+
+### sanity check p2
+
+```{r sanity_check_p2}
+  df = sim_list_outlier[[1]]
+  df$X00 <- 1
+  df <- df[, c(names(df)[1:(ncol(df)-2)], "X00", names(df)[ncol(df)-1])]
+  Des <- df[, c(1, 4, 5, 6, 7)]
+  y_values <- df[3]
+  
+  Y <- as.matrix(y_values)
+  random <- RAND_LIST
+  
+  out <- fastmix_iterative(
+    Y = Y,
+    Des = Des,
+    random = random,
+    iter = 30
+  )
+
+lmer_model <- lmer(Y ~ 1+ X1+ X2 + X3 + (1 + X1+X2+X3| subject), data = df)
+summary(lmer_model)
+
+```
+
+# Running on Outliers
+
+
+## Fastmix
+
+```{r running on outliers}
+run_fastmix_on_dataset_outlier <- function(df, RAND_LIST = c(1,2,3,4), iter = 50) {
+  
+  df$X00 <- 1
+  df <- df[, c(names(df)[1:(ncol(df)-2)], "X00", names(df)[ncol(df)-1])]
+  Des <- df[, c(1, 4, 5, 6, 7)]
+  y_values <- df[3]
+  
+  Y <- as.matrix(y_values)
+  random <- RAND_LIST
+  
+  out <- fastmix_iterative(
+    Y = Y,
+    Des = Des,
+    random = random,
+    iter = iter
+  )
+
+  return(out)
+}
+
+library(progressr)
+
+plan(multisession, workers = parallel::detectCores() - 1)
+# Start timer
+start_time <- Sys.time()
+print(start_time)
+
+with_progress({
+  p <- progressor(along = sim_list_outlier)
+
+  results_list <- future_lapply(sim_list_outlier, function(df) {
+    p()                              # advance progress bar
+    run_fastmix_on_dataset_outlier(df)       # run your function
+  })
+})
+
+end_time <- Sys.time()
+
+# Time elapsed
+elapsed <- end_time - start_time
+print(elapsed)
+
+saveRDS(results_list, "RESULTS_FM_OUTLIER.RDS")
+```
+
+
+## LMER
+
+
+```{r lmer_running_all_outlier_df}
+
+run_lmer_on_dataset <- function(df) {
+  
+
+  df$Y <- as.numeric(df$Y)
+  
+  lmer_model <- lmer(
+    Y ~ 1 + X1 +X2 + X3 + (1 + X1 + X2 + X3| subject),
+    data = df,
+    REML = TRUE
+  )
+  
+  return(lmer_model)
+}
+
+
+
+plan(multisession, workers = parallel::detectCores() - 1)
+start_time <- Sys.time()
+print(start_time)
+
+with_progress({
+  p <- progressor(along = sim_list_outlier)
+
+  lmer_results_list <- future_lapply(sim_list_outlier, function(df) {
+    p()
+    run_lmer_on_dataset(df)
+  })
+})
+end_time <- Sys.time()
+time_needed = end_time - start_time
+print(time_needed)
+
+
+saveRDS(lmer_results_list, "RESULTS_LMER_OUTLIER.RDS")
+
+
+```
+
+# Plots Outliers
+
+
+```{r read_in_saved_results_outlier }
+results_list = readRDS("RESULTS_FM_OUTLIER.RDS")
+lmer_results_list = readRDS("RESULTS_LMER_OUTLIER.RDS")
+
+```
+
+## Beta Plot
+
+```{r plots_simple_new_fast, fig.height=8, fig.width=8}
+
+# ------------------------------
+# 1. True beta vector
+# ------------------------------
+true_beta <- c(1, 2, -1, 2)
+
+# ------------------------------
+# 2. Function to compute MSE per iteration
+# ------------------------------
+compute_error_path <- function(beta_history, true_beta) {
+  sapply(beta_history, function(b) {
+    b <- as.numeric(b[,1])   # convert 4x1 matrix to vector
+    mean((b - true_beta)^2)# MSE
+    # To use Euclidean norm instead, uncomment the line below:
+    # sqrt(sum((b - true_beta)^2))
+  })
+}
+
+# ------------------------------
+# 3. Compute MSE trajectories for all datasets
+# ------------------------------
+error_list <- lapply(results_list, function(res) {
+  compute_error_path(res$beta_history, true_beta)
+})
+
+# ------------------------------
+# 4. Plotting all trajectories
+# ------------------------------
+# Start with first dataset to create plot frame
+plot(error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "MSE ERR",
+     ylim = range(unlist(error_list)),  # ensure all lines fit
+     main = "Convergence of β Estimates Across Datasets")
+
+# Overlay remaining datasets with semi-transparent lines
+for(i in 2:length(error_list)) {
+  lines(error_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# ------------------------------
+# 5. Plot average MSE across datasets
+# ------------------------------
+avg_err <- Reduce("+", error_list) / length(error_list)
+lines(avg_err, col = "red", lwd = 3)
+
+# Optional: add legend
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
+
+
+```
+
+## Sigma Gamma Plot
+
+```{r sigma_gamma_outlier, fig.height=8, fig.width=8}
+# True Σγ from DGP
+random_intercept_sd <- 1
+random_slope_sd <- c(0.25, 0.75, 0.5)
+Sigma_gamma_true <- diag(c(random_slope_sd^2,random_intercept_sd^2))
+
+# Function to compute Frobenius norm errors over iterations
+compute_sigma_gamma_error <- function(Sigma_gamma_history, Sigma_true) {
+  sapply(Sigma_gamma_history, function(Sigma_est) {
+    #sqrt(sum((Sigma_est - Sigma_true)^2))  # Frobenius norm
+     mean((Sigma_est - Sigma_true)^2)      # optional: MSE instead
+  })
+}
+
+# Compute for all datasets
+sigma_gamma_error_list <- lapply(results_list, function(res) {
+  compute_sigma_gamma_error(res$Sigma_gamma_history, Sigma_gamma_true)
+})
+
+# Plot first dataset to create frame
+plot(sigma_gamma_error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "MSE Err",
+     ylim = range(c(0,0.3)),
+     main = "Convergence of Σγ Estimates Across Datasets")
+
+# Overlay remaining datasets
+for(i in 2:length(sigma_gamma_error_list)) {
+  lines(sigma_gamma_error_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average error across datasets
+avg_sigma_err <- Reduce("+", sigma_gamma_error_list) / length(sigma_gamma_error_list)
+lines(avg_sigma_err, col = "red", lwd = 3)
+
+# Optional legend
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
+
+```
+
+
+## Sigma Gamma TOL
+```{r tolerance_sig_gamma_outlier, fig.height=8, fig.width=8}
+### Sigma Gamma Convergence (Difference between Iterations)
+
+# Function to compute Error between consecutive iterations
+compute_sigma_gamma_tolerance <- function(Sigma_gamma_history) {
+  n_iter <- length(Sigma_gamma_history)
+  
+  # Loop from 2 to end (since we need t and t-1)
+  sapply(2:n_iter, function(i) {
+    diff_matrix <- Sigma_gamma_history[[i]] - Sigma_gamma_history[[i-1]]
+    #sqrt(sum(diff_matrix^2)) # Frobenius norm of the difference
+    mean(diff_matrix^2)
+  })
+}
+
+# 1. Compute tolerance path for all datasets
+sigma_gamma_tol_list <- lapply(results_list, function(res) {
+  compute_sigma_gamma_tolerance(res$Sigma_gamma_history)
+})
+
+# 2. Plotting
+# Note: The x-axis will be 2:50 (49 points) because we lose the first point
+iterations_x <- 2:length(results_list[[1]]$Sigma_gamma_history)
+
+# Setup the empty plot frame
+plot(iterations_x, sigma_gamma_tol_list[[1]], type = "n", # 'n' for no points yet
+     ylim = range(0.01,0),
+     xlab = "Iteration", ylab = " MSE (t vs t-1)",
+     main = "Convergence Tolerance of Σγ (Consecutive Diff)")
+
+# Overlay all datasets
+for(i in 1:length(sigma_gamma_tol_list)) {
+  lines(iterations_x, sigma_gamma_tol_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# 3. Calculate and plot the average trajectory
+avg_sigma_tol <- Reduce("+", sigma_gamma_tol_list) / length(sigma_gamma_tol_list)
+lines(iterations_x, avg_sigma_tol, col = "blue", lwd = 3)
+
+legend("topright", legend = c("Individual Traces", "Average Tolerance"),
+       col = c(rgb(0,0,0,0.2), "blue"), lwd = c(1,3))
+```
+
+
+
+
+
+## sigma^2 plots
+
+
+```{r traj_sigma2_outlier}
+
+# Convert sigma2_history list of each dataset into numeric vector
+sigma2_trajectories <- lapply(results_list, function(res) {
+  unlist(res$sigma2_history)
+})
+# Plot the first dataset trajectory
+plot(sigma2_trajectories[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = expression(sigma^2),
+     ylim = range(10,0),
+     main = expression("Trajectory of"~sigma^2~"across all datasets"))
+
+# Overlay remaining datasets
+for(i in 2:length(sigma2_trajectories)) {
+  lines(sigma2_trajectories[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average trajectory across datasets
+avg_sigma2 <- Reduce("+", sigma2_trajectories) / length(sigma2_trajectories)
+lines(avg_sigma2, col = "red", lwd = 3)
+
+# True σ² from DGP
+true_sigma2 <- 1
+abline(h = true_sigma2, col = "blue", lty = 2)
+
+# Legend
+legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
+       col = c(rgb(0,0,0,0.2), "red", "blue"), lwd = c(1.5,3,2), lty = c(1,1,2))
+
+
+```
+
+
+## Final Results
+
+
+
+```{r fin_results}
+true_beta = c(2,1,2,-1)
+random_intercept_sd <- 1
+random_slope_sd <- c(0.25, 0.75, 0.5)
+true_sigma_gamma <- diag(c(random_intercept_sd^2,random_slope_sd^2))
+## FASTMIX
+
+N_results<- length(results_list)
+
+# Extract final betas from each dataset
+final_betas <- lapply(1:N_results, function(i) t(results_list[[i]]$beta_history[[50]]))
+beta_mat <- do.call(rbind, final_betas)
+beta_mean <- colMeans(beta_mat)
+
+
+
+
+# Extract final Sigma_gamma from each dataset
+final_Sigmas <- lapply(1:N_results, function(i) results_list[[i]]$Sigma_gamma_history[[50]])
+Sigma_array <- simplify2array(final_Sigmas)
+Sigma_gamma_mean <- apply(Sigma_array, c(1, 2), mean)
+
+
+final_sigma2 <- sapply(1:N_results, function(i) results_list[[i]]$sigma2_history[[50]])
+sigma2_mean <- mean(final_sigma2)
+
+
+# Current covariance matrix
+S <- Sigma_gamma_mean
+
+# Desired order: move row/col 4 to the front
+new_order <- c(4,1,2,3)
+
+# Reordered covariance matrix
+S_reordered <- S[new_order, new_order]
+Sigma_gamma_mean = S_reordered
+len_beta <- length(beta_mean)
+beta_mean <- c(beta_mean[len_beta], beta_mean[-len_beta])
+
+cat("\n\n\ FOR FASTMIX \n")
+cat("\n\n The Sigma^2 estimate: \n", sigma2_mean)
+cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
+print(Sigma_gamma_mean)
+cat( "\n\n with MSE: ", mean((Sigma_gamma_mean-true_sigma_gamma)^2 ))
+cat("\n\n The beta estimate: \n")
+cat(beta_mean, "\n\n with MSE: ", mean((beta_mean-true_beta)^2 ))
+
+
+### LMER
+
+N_results <- length(lmer_results_list)
+fixed_effects_list <- lapply(1:N_results, function(i) fixef(lmer_results_list[[i]]))
+Sigma_gamma_list <- lapply(1:N_results, function(i) as.matrix(VarCorr(lmer_results_list[[i]])$subject))
+sigma2_list <- sapply(1:N_results, function(i) sigma(lmer_results_list[[i]])^2)
+
+
+fixed_mat <- do.call(rbind, lapply(fixed_effects_list, t))
+beta_mean_lmer <- colMeans(fixed_mat)
+
+Sigma_array <- simplify2array(Sigma_gamma_list)
+Sigma_gamma_mean_lmer <- apply(Sigma_array, c(1, 2), mean)
+sigma2_mean_lmer <- mean(sigma2_list)
+
+
+cat("\n\n\n\n\n\n\ FOR LMER \n")
+cat("\n\n The Sigma^2 estimate: \n", sigma2_mean_lmer)
+cat("\n\n The Sigma Gamma Cov Matrix estimate: \n\n\n")
+print(Sigma_gamma_mean_lmer)
+cat("\n\n with MSE: ", mean((Sigma_gamma_mean_lmer-true_sigma_gamma))^2)
+cat("\n\n The beta estimate: \n")
+cat(beta_mean_lmer, "\n\n with MSE: ", mean((beta_mean_lmer-true_beta)^2),"\n\n")
+
+
+
+
+
+# # Current covariance matrix
+# S <- Sigma_gamma_mean
+# 
+# # Desired order: move row/col 4 to the front
+# new_order <- c(4, 1, 2, 3)
+# 
+# # Reordered covariance matrix
+# S_reordered <- S[new_order, new_order]
+# Sigma_gamma_mean = S_reordered
+
+
+
+
+
+mse_all <- sapply(seq_along(results_list), function(i) {
+  
+  # true REs reordered to match fastmix ordering
+  true_gamma <- simple_re_list_outlier[[i]][ , c("b_X1","b_X2","b_X3","rand_intercept")]
+  
+  # estimated REs at iteration 50
+  est_gamma_list <- results_list[[i]]$gamma_history[[50]]
+  est_gamma <- do.call(rbind, est_gamma_list)
+  
+  # MSE per subject
+  mse_subject <- rowMeans((est_gamma - true_gamma)^2)
+  
+  # average MSE for this dataset
+  mean(mse_subject)
+})
+
+# Final average across datasets
+cat("\n\n The mean MSE across all datasets for gamma estimates for FM: ")
+print(mean(mse_all))
+
+mse_lmer_all <- sapply(seq_along(lmer_results_list), function(i) {
+  
+  # TRUE random effects reordered to match lmer ordering (X1, X2, X3, intercept)
+  true_gamma <- simple_re_list_outlier[[i]][ , c("b_X1","b_X2","b_X3","rand_intercept")]
+  
+  # EST random effects from lmer
+  est_gamma <- as.matrix(ranef(lmer_results_list[[i]])[[1]])
+  est_gamma <- est_gamma[ , c("X1","X2","X3","(Intercept)")]
+  # Subject-level MSE
+  mse_subject <- rowMeans((est_gamma - true_gamma)^2)
+  
+  # Dataset-level MSE
+  mean(mse_subject)
+})
+
+# Overall average across datasets
+overall_mse_lmer <- mean(mse_lmer_all)
+
+cat("\n\n The mean MSE across all datasets for gamma estimates for LMER: ")
+print(overall_mse_lmer)
+
+
+cat("\n\n\n\n TRUE SIGMA_GAMMA: \n")
+
+true_sigma_gamma
+cat("\n FastMix SIGMA_GAMMA: \n")
+Sigma_gamma_mean
+cat("\n LMER SIGMA_GAMMA: \n")
+Sigma_gamma_mean_lmer
+
+```

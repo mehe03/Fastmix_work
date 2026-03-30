@@ -1,0 +1,2003 @@
+---
+title: "EM LMER"
+author: "Meherab"
+date: "2026-03-12"
+output: pdf_document
+---
+
+# Library
+```{r installing_libraries, message=FALSE}
+
+library(tidyverse)
+library(lmerTest)
+library(fastmap)
+library(furrr)   # for future_map2
+library(future)
+
+# Uncomment and run to install fastmix (not needed at the moment)
+#library(devtools)
+#devtools::install_github("terrysun0302/FastMix", build_vignettes = FALSE, force = TRUE)
+library(FastMix)
+library(Matrix)
+library(mclust)
+library(purrr)
+library(nortest)
+library(pbapply)
+library(future.apply)
+library(progressr)
+library(foreach)     # For the parallel loop structure
+library(doParallel)  # For the parallel backend
+
+```
+
+
+# Function
+
+```{r}
+
+
+rsolve = function (X, min.cond.num = 1e-06) 
+{
+    # Singular Value Decomposition
+    # X = U D V^T
+    o <- svd(X)
+    
+    # Threshold for smallest allowable eigenvalue
+    lambda <- min.cond.num * max(o$d)
+    
+    # Truncate small singular values
+    dd <- pmax(o$d, lambda)
+    
+    # Invert singular values
+    if (length(dd) == 1) {
+        dd.inv <- 1/dd
+    } else {
+        dd.inv <- diag(1/dd)
+    }
+    
+    # Return stable inverse: V D^{-1} U^T
+    return(o$v %*% dd.inv %*% t(o$u))
+}
+#########################################################
+# simple_em_lmer (Bias-Corrected for Covariance)
+#########################################################
+simple_em_lmer <- function(Y, Des, random = "all", iter = 100, lambda_ridge = 1) {
+  
+  Y <- as.matrix(Y)
+  M <- nrow(Y)
+  
+  X  <- as.matrix(Des[, -1])
+  covariates <- colnames(Des)[-1]
+  p  <- length(covariates)
+  
+  if (length(random) == 1 && random == "all") random <- 1:p
+  
+  DZ     <- Des[, c(1, random + 1)]
+  n_subj <- length(unique(Des[, 1]))
+  ID     <- sort(unique(Des[, 1]))
+  idx_list <- lapply(ID, function(id) which(Des[, 1] == id))
+  q <- length(random)
+  
+  # -----------------------------------------------------------
+  # 1. INITIALIZATION — warm start for B and sigma2
+  # -----------------------------------------------------------
+  
+  beta_ols      <- lm.fit(x = X, y = Y)$coefficients
+  residuals_ols <- Y - X %*% beta_ols
+  
+  # FIX 1: Initialize sigma2 from OLS residuals with correct df
+  sigma2_k <- sum(residuals_ols^2) / (M - p)
+  sigma2_k <- max(sigma2_k, 1e-6)
+  
+  gamma_hat <- vector("list", n_subj)
+  
+  # FIX 2: Initialize Sigma_Ui_list using the initial sigma2 and a ridge-based B
+  # so the very first M-step already has a reasonable correction term
+  B_init <- matrix(0, nrow = q, ncol = q)
+  for (i in seq_len(n_subj)) {
+    idx <- idx_list[[i]]
+    Zi  <- as.matrix(DZ[idx, -1, drop = FALSE])
+    Ri  <- residuals_ols[idx]
+    ridge_inv    <- rsolve(t(Zi) %*% Zi + lambda_ridge * diag(q))
+    gamma_hat[[i]] <- ridge_inv %*% t(Zi) %*% Ri
+    B_init <- B_init + gamma_hat[[i]] %*% t(gamma_hat[[i]])
+  }
+  B_init <- B_init / n_subj
+  # Ensure positive definite
+  eig <- eigen(B_init)
+  eig$values[eig$values < 1e-6] <- 1e-6
+  B_k <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+  
+  # FIX 3: Compute Sigma_Ui_list BEFORE first M-step using the warm-started B_k
+  B_inv <- rsolve(B_k)
+  Sigma_Ui_list <- vector("list", n_subj)
+  for (i in seq_len(n_subj)) {
+    idx  <- idx_list[[i]]
+    Zi   <- as.matrix(DZ[idx, -1, drop = FALSE])
+    inner_matrix    <- sigma2_k * B_inv + t(Zi) %*% Zi
+    Sigma_Ui_list[[i]] <- sigma2_k * rsolve(inner_matrix)
+  }
+  
+  beta_history  <- vector("list", iter)
+  B_history     <- vector("list", iter)
+  gamma_history <- vector("list", iter)
+  sigma2_history <- vector("list", iter)
+  
+  # -----------------------------------------------------------
+  # 2. EM ITERATIONS
+  # -----------------------------------------------------------
+  
+  for (it in 1:iter) {
+    
+    # =========================================================
+    # M-STEP: Update beta
+    # =========================================================
+    
+    Y_star <- numeric(M)
+    for (i in seq_len(n_subj)) {
+      idx    <- idx_list[[i]]
+      Zi     <- as.matrix(DZ[idx, -1, drop = FALSE])
+      Y_star[idx] <- Y[idx] - Zi %*% gamma_hat[[i]]
+    }
+    
+    beta_k <- lm.fit(x = X, y = Y_star)$coefficients
+    
+    # =========================================================
+    # M-STEP: Update sigma2 with correct df
+    # =========================================================
+    
+    # FIX 4: Residuals from the FULL model (Y, not Y_star), and divide by M - p
+    # Also account for posterior variance of gamma in the residual sum of squares
+    rss <- 0
+    for (i in seq_len(n_subj)) {
+      idx  <- idx_list[[i]]
+      Xi   <- as.matrix(X[idx, , drop = FALSE])
+      Zi   <- as.matrix(DZ[idx, -1, drop = FALSE])
+      Yi   <- as.matrix(Y[idx])
+      ri   <- Yi - Xi %*% beta_k - Zi %*% gamma_hat[[i]]
+      # Add trace term: E[||r||^2] = ||r_hat||^2 + tr(Zi Sigma_Ui Zi^T)
+      rss  <- rss + sum(ri^2) + sum(diag(Zi %*% Sigma_Ui_list[[i]] %*% t(Zi)))
+    }
+    sigma2_k <- rss / M   # M is correct here after the trace correction
+    sigma2_k <- max(sigma2_k, 1e-6)
+    
+    # =========================================================
+    # M-STEP: Update B with bias correction (now always non-zero)
+    # =========================================================
+    
+    B_k <- matrix(0, nrow = q, ncol = q)
+    for (i in seq_len(n_subj)) {
+      B_k <- B_k + (gamma_hat[[i]] %*% t(gamma_hat[[i]])) + Sigma_Ui_list[[i]]
+    }
+    B_k <- B_k / n_subj
+    
+    B_k <- (B_k + t(B_k)) / 2
+    eig <- eigen(B_k)
+    eig$values[eig$values < 1e-6] <- 1e-6
+    B_k <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+    
+    # =========================================================
+    # E-STEP: Update gamma_hat and Sigma_Ui
+    # =========================================================
+    
+    B_inv <- rsolve(B_k)
+    
+    for (i in seq_len(n_subj)) {
+      idx    <- idx_list[[i]]
+      Yi     <- as.matrix(Y[idx])
+      Xi     <- as.matrix(X[idx, , drop = FALSE])
+      Zi     <- as.matrix(DZ[idx, -1, drop = FALSE])
+      resid_i <- Yi - Xi %*% beta_k
+      
+      inner_matrix       <- sigma2_k * B_inv + t(Zi) %*% Zi
+      inner_inv          <- rsolve(inner_matrix)
+      Sigma_Ui_list[[i]] <- sigma2_k * inner_inv
+      
+      Vi_inv_resid  <- (1 / sigma2_k) * (resid_i - Zi %*% inner_inv %*% t(Zi) %*% resid_i)
+      gamma_hat[[i]] <- B_k %*% t(Zi) %*% Vi_inv_resid
+    }
+    
+    beta_history[[it]]   <- beta_k
+    B_history[[it]]      <- B_k
+    gamma_history[[it]]  <- gamma_hat
+    sigma2_history[[it]] <- sigma2_k
+  }
+  
+  return(list(
+    beta_history        = beta_history,
+    Sigma_gamma_history = B_history,
+    gamma_history       = gamma_history,
+    sigma2_history      = sigma2_history
+  ))
+}
+```
+
+# Data
+
+```{r}
+# Load MASS for multivariate normal distribution
+library(MASS)
+
+# Set seed for reproducibility
+set.seed(2026)
+
+# =========================================================
+# 1. Define True Parameters
+# =========================================================
+n_subj <- 100       # Number of subjects
+m_points <- 6       # Time points per subject
+N <- n_subj * m_points
+
+# Fixed effects: Intercept = 5, Var1 = 2, Var2 = -1.5
+beta_true <- c(5, 2, -1.5)              
+sigma2_true <- 1.0                # Residual variance
+
+# True Random Effect Covariance (B) - Now a 3x3 matrix
+# Diagonal: Var(Int)=2.0, Var(Var1)=1.0, Var(Var2)=0.5
+B_true <- matrix(c(2.0, 0, 0, 
+                   0, 1.0, 0,
+                   0, 0, 0.5), nrow = 3)
+
+# =========================================================
+# 2. Simulate Data
+# =========================================================
+ID <- rep(1:n_subj, each = m_points)
+Intercept <- rep(1, N)
+
+# We can make Var1 a time-varying covariate and Var2 random noise
+Var1 <- rep(0:(m_points-1), n_subj) 
+Var2 <- rnorm(N, mean = 0, sd = 1)
+
+# Create design matrix with Intercept + 2 covariates
+Des <- data.frame(ID = ID, Intercept = Intercept, Var1 = Var1, Var2 = Var2)
+
+X <- as.matrix(Des[, -1])
+Z <- as.matrix(Des[, -1])
+
+# Generate random effects for each subject (now 3 dimensions)
+gamma_true <- mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+
+# Generate response variable Y
+Y <- numeric(N)
+for (i in 1:n_subj) {
+  idx <- which(ID == i)
+  
+  # Y_i = X_i * beta + Z_i * gamma_i + epsilon_i
+  epsilon <- rnorm(length(idx), mean = 0, sd = sqrt(sigma2_true))
+  Y[idx] <- X[idx, ] %*% beta_true + Z[idx, ] %*% gamma_true[i, ] + epsilon
+}
+
+
+
+
+```
+
+
+
+
+
+# Run the Code
+
+
+
+```{r }
+
+# =========================================================
+# 3. Run the Simplified EM LMER
+# =========================================================
+cat("Running Simple EM LMER...\n")
+# Running for 50 iterations
+em_results <- simple_em_lmer(Y, Des, random = "all", iter = 50, lambda_ridge = 1)
+
+cat("\n=========================================================\n")
+cat("5. Compare with standard lme4::lmer()\n")
+cat("=========================================================\n")
+
+# Combine Y into our dataframe for lmer
+sim_data <- cbind(Y = Y, Des)
+
+# Fit the model: Y predicted by Var1 and Var2, with random intercepts and slopes by ID
+# Note: lmer automatically adds the fixed intercept
+lmer_model <- lmer(Y ~ Var1 + Var2 + (1 + Var1 + Var2 | ID), data = sim_data, REML = FALSE)
+
+# Extract lmer estimates
+lmer_beta <- fixef(lmer_model)
+lmer_sigma2 <- sigma(lmer_model)^2
+lmer_B <- VarCorr(lmer_model)$ID
+
+# --- COMPARISON OUTPUT ---
+
+cat("\n--- FIXED EFFECTS (Beta) ---\n")
+cat("True:      ", beta_true, "\n")
+cat("Simple EM: ", em_results$beta_history[[50]], "\n")
+cat("lme4:      ", as.numeric(lmer_beta), "\n")
+
+cat("\n--- RESIDUAL VARIANCE (Sigma^2) ---\n")
+cat("True:      ", sigma2_true, "\n")
+cat("Simple EM: ", em_results$sigma2_history[[50]], "\n")
+cat("lme4:      ", lmer_sigma2, "\n")
+
+cat("\n--- RANDOM EFFECT COVARIANCE (B) ---\n")
+cat("True:\n")
+print(B_true)
+cat("\nSimple EM:\n")
+print(em_results$Sigma_gamma_history[[50]])
+cat("\nlme4:\n")
+print(attr(lmer_B, "stddev")^2 * attr(lmer_B, "correlation")) # Quick way to print the full covariance matrix
+
+
+cat("\n=========================================================\n")
+cat("6. RMSE of Parameter Estimates (Simple EM vs. lme4)\n")
+cat("=========================================================\n")
+
+# 1. Extract final estimates from Simple EM
+beta_est <- em_results$beta_history[[50]]
+B_est <- em_results$Sigma_gamma_history[[50]]
+# Convert the list of random effect vectors into an n x q matrix
+gamma_est_mat <- do.call(rbind, lapply(em_results$gamma_history[[50]], as.numeric))
+
+# 2. Extract final estimates from lme4
+lmer_beta_est <- as.numeric(fixef(lmer_model))
+lmer_B_est <- as.matrix(VarCorr(lmer_model)$ID)
+lmer_gamma_est <- as.matrix(ranef(lmer_model)$ID)
+
+# 3. Calculate RMSEs
+# RMSE of Fixed Effects (Beta)
+rmse_beta_em <- sqrt(mean((beta_est - beta_true)^2))
+rmse_beta_lmer <- sqrt(mean((lmer_beta_est - beta_true)^2))
+
+# RMSE of Covariance Matrix (B)
+rmse_cov_em <- sqrt(mean((B_est - B_true)^2))
+rmse_cov_lmer <- sqrt(mean((lmer_B_est - B_true)^2))
+
+# RMSE of Random Effects (Gamma)
+rmse_gamma_em <- sqrt(mean((gamma_est_mat - gamma_true)^2))
+rmse_gamma_lmer <- sqrt(mean((lmer_gamma_est - gamma_true)^2))
+
+# --- PRINT OUTPUT ---
+cat("\n--- RMSE of Fixed Effects (Beta) ---\n")
+cat("Simple EM: ", rmse_beta_em, "\n")
+cat("lme4:      ", rmse_beta_lmer, "\n")
+
+cat("\n--- RMSE of Covariance Matrix (B) ---\n")
+cat("Simple EM: ", rmse_cov_em, "\n")
+cat("lme4:      ", rmse_cov_lmer, "\n")
+
+cat("\n--- RMSE of Random Effects (Gamma) ---\n")
+cat("Simple EM: ", rmse_gamma_em, "\n")
+cat("lme4:      ", rmse_gamma_lmer, "\n")
+```
+
+
+
+```{r}
+# Calculate the Mean Squared Error (MSE) for each iteration
+mse_b <- sapply(em_results$Sigma_gamma_history, function(B_est) {
+  mean((B_est - B_true)^2)
+})
+
+# Plot the MSE history
+plot(1:length(mse_b), mse_b, 
+     type = "b",       
+     pch = 16,         
+     col = "blue",     
+     lwd = 2,          
+     xlab = "Iteration", 
+     ylab = "Mean Squared Error (MSE)",
+     main = expression(paste("MSE History of ", Sigma[gamma], " (B Matrix)")))
+
+# Add a horizontal dashed line at 0 to show perfect convergence
+abline(h = 0, col = "red", lty = 2, lwd = 2)
+
+```
+
+
+# 1000 Copies
+
+
+
+```{r}
+# =========================================================
+# CHUNK 1: Generate simulation datasets
+# =========================================================
+
+set.seed(2026)
+
+n_sims  <- 1000
+n_subj  <- 100
+m_points <- 5
+N       <- n_subj * m_points
+
+# True parameters
+beta_true         <- c(5, 2, -1.5)
+sigma2_true       <- 1.0
+random_slope_sd   <- sqrt(1.0)   # adjust to match your DGP
+random_intercept_sd <- sqrt(2.0) # adjust to match your DGP
+
+# Fixed design
+ID        <- rep(1:n_subj, each = m_points)
+Intercept <- rep(1, N)
+Var1      <- rep(0:(m_points - 1), n_subj)
+Var2      <- rnorm(N, mean = 0, sd = 1)
+Des       <- data.frame(ID = ID, Intercept = Intercept, Var1 = Var1, Var2 = Var2)
+X         <- as.matrix(Des[, -1])
+Z         <- as.matrix(Des[, -1])
+
+B_true <- matrix(c(2.0, 0.5, 0.2,
+                   0.5, 1.0, 0.1,
+                   0.2, 0.1, 0.5), nrow = 3)
+
+# Generate one dataset per simulation seed
+sim_list <- lapply(seq_len(n_sims), function(s) {
+  set.seed(2026 + s)
+  gamma_true <- MASS::mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+  Y <- numeric(N)
+  for (i in seq_len(n_subj)) {
+    idx        <- which(ID == i)
+    epsilon    <- rnorm(length(idx), mean = 0, sd = sqrt(sigma2_true))
+    Y[idx]     <- X[idx, ] %*% beta_true + Z[idx, ] %*% gamma_true[i, ] + epsilon
+  }
+  df      <- cbind(Y = Y, Des)
+  df$sim_id <- s
+  df
+})
+
+cat("Generated", length(sim_list), "datasets.\n")
+
+```
+
+```{r}
+# =========================================================
+# CHUNK 2: Run EM + lmer in parallel with progress bar
+# =========================================================
+library(future)
+library(future.apply)
+library(progressr)
+library(lme4)
+
+plan(multisession, workers = parallel::detectCores() - 4)
+
+start_time <- Sys.time()
+cat("Started at:", format(start_time), "\n")
+
+with_progress({
+  p <- progressor(along = sim_list)
+  results_list <- future_lapply(sim_list, function(df) {
+    p()
+    
+    # --- Run Simple EM ---
+    res <- simple_em_lmer(df$Y, df[, c("ID","Intercept","Var1","Var2")],
+                          random = "all", iter = 50, lambda_ridge = 1)
+    res$sim_id <- df$sim_id[1]
+    
+    # --- Run lmer on same dataset ---
+    lmer_model <- suppressMessages(suppressWarnings(
+      lmer(Y ~ Var1 + Var2 + (1 + Var1 + Var2 | ID),
+           data = df, REML = FALSE,
+           control = lmerControl(calc.derivs = FALSE))
+    ))
+    
+    # Store lmer results alongside EM results
+    res$lmer_beta  <- as.numeric(fixef(lmer_model))
+    res$lmer_B     <- as.matrix(VarCorr(lmer_model)$ID)
+    res$lmer_gamma <- as.matrix(ranef(lmer_model)$ID)
+    res$lmer_sigma2 <- sigma(lmer_model)^2
+    
+    
+    res
+    
+  }, future.packages = c("lme4"), future.seed = TRUE)
+})
+
+elapsed <- Sys.time() - start_time
+cat("Finished. Time elapsed:", round(elapsed, 2), attr(elapsed, "units"), "\n")
+
+
+
+
+# =========================================================
+# CHUNK 4: Compute and print average RMSE across simulations
+# =========================================================
+
+# True parameters (must match Chunk 1)
+beta_true <- c(5, 2, -1.5)
+B_true    <- matrix(c(2.0, 0.5, 0.2,
+                      0.5, 1.0, 0.1,
+                      0.2, 0.1, 0.5), nrow = 3)
+
+rmse_table <- do.call(rbind, lapply(seq_along(results_list), function(s) {
+  res        <- results_list[[s]]
+  df         <- sim_list[[s]]
+  
+  # --- EM final estimates ---
+  beta_est      <- as.numeric(res$beta_history[[50]])
+  B_est         <- res$Sigma_gamma_history[[50]]
+  gamma_est_mat <- do.call(rbind, lapply(res$gamma_history[[50]], as.numeric))
+  
+  # --- lmer estimates ---
+  lmer_beta_est  <- res$lmer_beta
+  lmer_B_est     <- res$lmer_B
+  lmer_gamma_est <- res$lmer_gamma
+ 
+  
+  # --- True gamma for this simulation (regenerate with same seed) ---
+  set.seed(2026 + s)
+  gamma_true <- MASS::mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+  
+  c(
+    rmse_beta_em    = sqrt(mean((beta_est      - beta_true)^2)),
+    rmse_beta_lmer  = sqrt(mean((lmer_beta_est - beta_true)^2)),
+    rmse_cov_em     = sqrt(mean((B_est         - B_true)^2)),
+    rmse_cov_lmer   = sqrt(mean((lmer_B_est    - B_true)^2)),
+    rmse_gamma_em   = sqrt(mean((gamma_est_mat - gamma_true)^2)),
+    rmse_gamma_lmer = sqrt(mean((lmer_gamma_est - gamma_true)^2))
+  )
+}))
+
+avg <- colMeans(rmse_table)
+
+cat("\n=========================================================\n")
+cat("Average RMSE over", length(results_list), "Simulations\n")
+cat("=========================================================\n")
+
+cat("\n--- RMSE of Fixed Effects (Beta) ---\n")
+cat("Simple EM: ", round(avg["rmse_beta_em"],    6), "\n")
+cat("lme4:      ", round(avg["rmse_beta_lmer"],  6), "\n")
+
+cat("\n--- RMSE of Covariance Matrix (B) ---\n")
+cat("Simple EM: ", round(avg["rmse_cov_em"],     6), "\n")
+cat("lme4:      ", round(avg["rmse_cov_lmer"],   6), "\n")
+
+cat("\n--- RMSE of Random Effects (Gamma) ---\n")
+cat("Simple EM: ", round(avg["rmse_gamma_em"],   6), "\n")
+cat("lme4:      ", round(avg["rmse_gamma_lmer"], 6), "\n")
+
+
+
+estimates_table <- do.call(rbind, lapply(seq_along(results_list), function(s) {
+  res <- results_list[[s]]
+  
+  c(
+    beta_em    = as.numeric(res$beta_history[[50]]),
+    beta_lmer  = res$lmer_beta,
+    B_em       = as.numeric(res$Sigma_gamma_history[[50]]),
+    B_lmer     = as.numeric(res$lmer_B),
+    sigma2_em  = as.numeric(res$sigma2_history[[50]]),
+    sigma2_lmer = res$lmer_sigma2
+  )
+}))
+
+avg_est <- colMeans(estimates_table)
+
+avg_beta_em   <- avg_est[paste0("beta_em",   1:3)]
+avg_beta_lmer <- avg_est[paste0("beta_lmer", 1:3)]
+avg_B_em      <- matrix(avg_est[paste0("B_em",   1:9)], nrow = 3)
+avg_B_lmer    <- matrix(avg_est[paste0("B_lmer", 1:9)], nrow = 3)
+avg_sigma2_em <- avg_est["sigma2_em"]
+avg_sigma2_lmer <- avg_est["sigma2_lmer"] 
+
+cat("\n=========================================================\n")
+cat("Average Parameter Estimates over", length(results_list), "Simulations\n")
+cat("=========================================================\n")
+
+cat("\n--- Fixed Effects (Beta) ---\n")
+cat("True:      ", beta_true, "\n")
+cat("Simple EM: ", round(avg_beta_em,   6), "\n")
+cat("lme4:      ", round(avg_beta_lmer, 6), "\n")
+
+cat("\n--- Residual Variance (sigma2) ---\n")
+cat("True:      ", sigma2_true, "\n")
+cat("Simple EM: ", round(avg_sigma2_em, 6), "\n")
+cat("lme4:      ", round(avg_sigma2_lmer, 6), "\n")
+
+cat("\n--- Covariance Matrix B ---\n")
+cat("True:\n");      print(round(B_true,       4))
+cat("Simple EM:\n"); print(round(avg_B_em,     4))
+cat("lme4:\n");      print(round(avg_B_lmer,   4))
+```
+
+
+# Plots
+
+
+```{r}
+# True Σγ from DGP
+Sigma_gamma_true <- B_true
+
+# Function to compute Frobenius norm errors over iterations
+compute_sigma_gamma_error <- function(Sigma_gamma_history, Sigma_true) {
+  sapply(Sigma_gamma_history, function(Sigma_est) {
+    #sqrt(sum((Sigma_est - Sigma_true)^2))  # Frobenius norm
+     mean((Sigma_est - Sigma_true)^2)      # optional: MSE instead
+  })
+}
+
+# Compute for all datasets
+sigma_gamma_error_list <- lapply(results_list, function(res) {
+  compute_sigma_gamma_error(res$Sigma_gamma_history, Sigma_gamma_true)
+})
+
+# Plot first dataset to create frame
+plot(sigma_gamma_error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "MSE Err",
+     ylim = c(0,0.25),
+     main = "Convergence of Σγ Estimates Across Datasets")
+
+# Overlay remaining datasets
+for(i in 2:length(sigma_gamma_error_list)) {
+  lines(sigma_gamma_error_list[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average error across datasets
+avg_sigma_err <- Reduce("+", sigma_gamma_error_list) / length(sigma_gamma_error_list)
+lines(avg_sigma_err, col = "red", lwd = 3)
+
+# Optional legend
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
+
+```
+
+
+
+
+```{r}
+
+# Convert sigma2_history list of each dataset into numeric vector
+sigma2_trajectories <- lapply(results_list, function(res) {
+  unlist(res$sigma2_history)
+})
+# Plot the first dataset trajectory
+plot(sigma2_trajectories[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = expression(sigma^2),
+     ylim = range(unlist(sigma2_trajectories)),
+     main = expression("Trajectory of"~sigma^2~"across all datasets"))
+
+# Overlay remaining datasets
+for(i in 2:length(sigma2_trajectories)) {
+  lines(sigma2_trajectories[[i]], col = rgb(0,0,0,0.2))
+}
+
+# Average trajectory across datasets
+avg_sigma2 <- Reduce("+", sigma2_trajectories) / length(sigma2_trajectories)
+lines(avg_sigma2, col = "red", lwd = 3)
+
+# True σ² from DGP
+true_sigma2 <- 1
+abline(h = true_sigma2, col = "blue", lty = 2)
+
+# Legend
+legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
+       col = c(rgb(0,0,0,0.2), "red", "blue"), lwd = c(1.5,3,2), lty = c(1,1,2))
+```
+
+
+
+
+
+
+```{r}
+# =========================================================
+# Plot: Random Effect (gamma) estimation error over iterations
+# =========================================================
+
+compute_gamma_error <- function(gamma_history, gamma_true) {
+  sapply(gamma_history, function(gamma_hat_list) {
+    gamma_est_mat <- do.call(rbind, lapply(gamma_hat_list, as.numeric))
+    mean((gamma_est_mat - gamma_true)^2)   # MSE across all subjects and dimensions
+  })
+}
+
+# Regenerate true gammas for each simulation (same seeds as Chunk 1)
+gamma_error_list <- lapply(seq_along(results_list), function(s) {
+  set.seed(2026 + s)
+  gamma_true_s <- MASS::mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+  compute_gamma_error(results_list[[s]]$gamma_history, gamma_true_s)
+})
+
+# Plot
+plot(gamma_error_list[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = "MSE",
+     ylim = c(0, max(sapply(gamma_error_list, max))),
+     main = "Convergence of gamma estimates across datasets")
+
+for (i in 2:length(gamma_error_list)) {
+  lines(gamma_error_list[[i]], col = rgb(0, 0, 0, 0.2))
+}
+
+avg_gamma_err <- Reduce("+", gamma_error_list) / length(gamma_error_list)
+lines(avg_gamma_err, col = "red", lwd = 3)
+
+legend("topright", legend = c("Individual datasets", "Average"),
+       col = c(rgb(0, 0, 0, 0.2), "red"), lwd = c(1.5, 3))
+```
+
+
+
+# NEW WITH TRIMMING
+
+## HELPER
+
+```{r}
+###############################################################################
+# EM Algorithm for LMER with optional FastMix-style trimming
+#
+# Dependencies: base R only (no external packages required)
+#
+# Functions included (in order):
+#   rsolve          - robust matrix inverse via SVD
+#   rhalfinv        - robust symmetric matrix half-inverse via eigen
+#   Sfunc1          - helper: conditional mean/derivative on truncated normal
+#   Sinv1           - helper: Newton-Raphson inversion of Sfunc1
+#   sigmaR2         - helper: conditional variance under trimming
+#   RobustMeanEst   - trimmed mean with bias correction (from FastMix)
+#   cov.est         - bias-corrected covariance estimator (from FastMix)
+#   simple_em_lmer  - main EM function with optional FastMix trimming
+###############################################################################
+
+
+# ----------------------------------------------------------------------------
+# rsolve: Robust matrix inverse via SVD
+#   Truncates singular values below min.cond.num * max(singular value)
+# ----------------------------------------------------------------------------
+rsolve <- function(X, min.cond.num = 1e-6) {
+  o <- svd(X)
+  lambda <- min.cond.num * max(o$d)
+  dd <- pmax(o$d, lambda)
+  if (length(dd) == 1) {
+    dd.inv <- 1 / dd
+  } else {
+    dd.inv <- diag(1 / dd)
+  }
+  return(o$v %*% dd.inv %*% t(o$u))
+}
+
+
+# ----------------------------------------------------------------------------
+# rhalfinv: Robust half-inverse of a symmetric positive semi-definite matrix
+#   Returns X^{-1/2} via eigen decomposition, clamping small eigenvalues
+# ----------------------------------------------------------------------------
+rhalfinv <- function(X, min.cond.num = 1e-6) {
+  X <- as.matrix(X)
+  if (nrow(X) != ncol(X)) stop("X must be a square matrix!")
+  if (!isSymmetric(X, tol = 1e-6)) warning("X should be symmetric!")
+  if (all(dim(X) == c(1, 1))) {
+    return(as.matrix(1 / sqrt(pmax(X, 0))))
+  }
+  o <- eigen(X, symmetric = TRUE)
+  lambda <- min.cond.num * max(o$values)
+  dd <- pmax(o$values, lambda)
+  return(o$vectors %*% diag(1 / sqrt(dd)) %*% t(o$vectors))
+}
+
+
+# ----------------------------------------------------------------------------
+# Sfunc1: Computes conditional mean S(mu), its derivative dS, and
+#   intermediate quantities for the bias correction in RobustMeanEst.
+#   Integrates over a grid on [-R, R] using a trapezoidal approximation.
+# ----------------------------------------------------------------------------
+Sfunc1 <- function(mu, R, L, ngrid = 500) {
+  dx <- 2 * R / ngrid
+  mygrid <- seq(-R, R, dx)
+  phi.grid <- dnorm(mygrid - mu)
+  Fchi2.grid <- pchisq(R^2 - mygrid^2, L - 1)
+  h.grid <- Fchi2.grid * phi.grid
+  Bmu <- sum(h.grid) * dx
+  Tmu <- sum(h.grid * mygrid) * dx
+  Hmu <- sum(h.grid * (mygrid^2)) * dx
+  return(c(Tmu = Tmu, Bmu = Bmu, Hmu = Hmu,
+           S = Tmu / Bmu,
+           dS = (Hmu * Bmu - Tmu^2) / Bmu^2))
+}
+
+
+# ----------------------------------------------------------------------------
+# Sinv1: Newton-Raphson inversion of Sfunc1
+#   Finds mu such that S(mu) = mu1.trim
+# ----------------------------------------------------------------------------
+Sinv1 <- function(mu1.trim, R, L, ngrid = 500, tol = 1e-4, max.iter = 10) {
+  k <- 0; err <- Inf; mu1.now <- mu1.trim
+  while ((abs(err) > tol) & (k < max.iter)) {
+    rk <- Sfunc1(mu1.now, R, L, ngrid = ngrid)
+    mu1.next <- mu1.now - (rk[["S"]] - mu1.trim) / rk[["dS"]]
+    k <- k + 1
+    err <- mu1.next - mu1.now
+    mu1.now <- mu1.next
+  }
+  if (abs(err) > tol)
+    warning("Max iterations reached before convergence in Sinv1.")
+  return(list(mu1 = mu1.now, niter = k, err = err))
+}
+
+
+# ----------------------------------------------------------------------------
+# sigmaR2: Conditional variance of a truncated chi distribution
+#   Used to compute the variance inflation factor in RobustMeanEst
+# ----------------------------------------------------------------------------
+sigmaR2 <- function(trim, L) {
+  pchisq(qchisq(1 - trim, df = L), df = L + 2) / (1 - trim)
+}
+
+
+# ----------------------------------------------------------------------------
+# RobustMeanEst: Trimmed mean of gamma_hat with bias correction (FastMix)
+#
+#   X     : n x q matrix of per-subject random effect estimates (gamma_hat)
+#   Sigma : q x q covariance matrix used to standardize X (typically B + sigma2*(ZtZ)^{-1})
+#   trim  : fraction to trim (default 0.5, i.e., top 50% by Mahalanobis distance)
+#
+#   Returns:
+#     mu.est       : bias-corrected mean estimate (q-vector)
+#     V.inflation  : variance inflation factor for fixed effect t-stats
+#     niter, err, R: convergence diagnostics
+# ----------------------------------------------------------------------------
+RobustMeanEst <- function(X, Sigma = diag(ncol(X)), trim = 0.5,
+                          tol = 1e-2, max.iter = 10) {
+  L <- ncol(X)
+  S.half.inv <- rhalfinv(Sigma)
+  S.half <- rsolve(S.half.inv)
+
+  # Standardize X into isotropic space
+  Xtilde <- X %*% S.half.inv
+  mus.now <- colMeans(Xtilde)
+
+  k <- 0; err <- Inf
+  while ((abs(err) > tol) & (k < max.iter)) {
+    Z <- sweep(Xtilde, 2, mus.now)
+    ll <- sqrt(rowSums(Z^2))
+    R <- as.numeric(quantile(ll, 1 - trim))
+    idx <- which(ll <= R)
+
+    if (L == 1) {
+      Mvec.trim <- mean(Z[idx, ])
+    } else {
+      Mvec.trim <- colMeans(Z[idx, , drop = FALSE])
+    }
+
+    M.trim <- sqrt(sum(Mvec.trim^2))
+    v <- if (M.trim > 0) Mvec.trim / M.trim else Mvec.trim
+
+    o <- Sinv1(M.trim, R, L = L)
+    err <- o$mu1
+    mus.now <- mus.now + err * v
+    k <- k + 1
+  }
+
+  mu.est <- drop(S.half %*% mus.now)
+  kappa <- if (abs(M.trim) > 0) err / M.trim else 0
+  V.inflation <- kappa^2 * sigmaR2(trim, L) / (1 - trim)
+
+  return(list(mu.est = mu.est, niter = k, err = err, R = R,
+              V.inflation = V.inflation))
+}
+
+
+# ----------------------------------------------------------------------------
+# cov.est: Bias-corrected covariance estimator (FastMix)
+#
+#   bmat        : n x q matrix of OLS random effect estimates (gamma_hat stacked)
+#   var.epsilon : scalar residual variance estimate (sigma2)
+#   xx          : sum of (ZiᵀZi)^{-1} across subjects — the bias correction term
+#   m           : number of subjects
+#   coef        : q-vector of per-direction scaling coefficients (default all 1s)
+#                 In FastMix these are set to lambda.quan in trimmed directions
+#
+#   The estimator: B = diag(sqrt(coef)) * cov(gamma_hat) * diag(sqrt(coef))
+#                      - (sigma2 / m) * sum((ZiᵀZi)^{-1})
+#   This subtracts the expected bias from using OLS gamma estimates instead
+#   of the true random effects.
+# ----------------------------------------------------------------------------
+cov.est <- function(bmat, var.epsilon, xx, m, coef) {
+  vc <- cov(as.matrix(bmat))
+  diag(vc) <- diag(vc) * coef           # rescale trimmed directions
+  vc <- vc - (1 / m) * var.epsilon * xx # subtract OLS bias
+  return(as.matrix(vc))
+}
+
+```
+
+
+
+# Model 1
+
+```{r}
+
+# =============================================================================
+# MODEL 1: em_lmer_combined
+# EM with FastMix trimming baked inside every M-step iteration.
+# Arguments:
+#   do_trim : logical — whether to apply trimming inside the loop
+#   trim    : fraction of subjects trimmed each iteration (default 0.5)
+# =============================================================================
+em_lmer_combined <- function(Y, Des,
+                             random       = "all",
+                             iter         = 100,
+                             lambda_ridge = 1,
+                             do_trim      = FALSE,
+                             trim         = 0.5) {
+
+  Y  <- as.matrix(Y); M <- nrow(Y)
+  X  <- as.matrix(Des[, -1]); p <- ncol(X)
+  if (length(random) == 1 && random == "all") random <- 1:p
+  DZ       <- Des[, c(1, random + 1)]
+  n_subj   <- length(unique(Des[, 1]))
+  ID       <- sort(unique(Des[, 1]))
+  idx_list <- lapply(ID, function(id) which(Des[, 1] == id))
+  q        <- length(random)
+
+  # Initialization
+  beta_ols      <- lm.fit(x = X, y = Y)$coefficients
+  residuals_ols <- Y - X %*% beta_ols
+  sigma2_k      <- max(sum(residuals_ols^2) / (M - p), 1e-6)
+  gamma_hat     <- vector("list", n_subj)
+  B_init        <- matrix(0, q, q)
+  for (i in seq_len(n_subj)) {
+    idx            <- idx_list[[i]]
+    Zi             <- as.matrix(DZ[idx, -1, drop = FALSE])
+    Ri             <- residuals_ols[idx]
+    gamma_hat[[i]] <- rsolve(t(Zi) %*% Zi + lambda_ridge * diag(q)) %*% t(Zi) %*% Ri
+    B_init         <- B_init + gamma_hat[[i]] %*% t(gamma_hat[[i]])
+  }
+  B_init <- B_init / n_subj
+  eig    <- eigen(B_init)
+  eig$values[eig$values < 1e-6] <- 1e-6
+  B_k    <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+
+  B_inv         <- rsolve(B_k)
+  Sigma_Ui_list <- vector("list", n_subj)
+  for (i in seq_len(n_subj)) {
+    idx                <- idx_list[[i]]
+    Zi                 <- as.matrix(DZ[idx, -1, drop = FALSE])
+    Sigma_Ui_list[[i]] <- sigma2_k * rsolve(sigma2_k * B_inv + t(Zi) %*% Zi)
+  }
+
+  # Pre-compute (Zi'Zi)^{-1} for trimming bias correction
+  xx_list <- lapply(seq_len(n_subj), function(i) {
+    Zi <- as.matrix(DZ[idx_list[[i]], -1, drop = FALSE])
+    rsolve(t(Zi) %*% Zi)
+  })
+  XX_sum <- Reduce("+", xx_list)
+
+  beta_history   <- vector("list", iter)
+  B_history      <- vector("list", iter)
+  gamma_history  <- vector("list", iter)
+  sigma2_history <- vector("list", iter)
+
+  for (it in seq_len(iter)) {
+
+    # M-step: beta
+    Y_star <- numeric(M)
+    for (i in seq_len(n_subj)) {
+      idx         <- idx_list[[i]]
+      Y_star[idx] <- Y[idx] - as.matrix(DZ[idx, -1, drop = FALSE]) %*% gamma_hat[[i]]
+    }
+    beta_k <- lm.fit(x = X, y = Y_star)$coefficients
+
+    # M-step: sigma2
+    rss <- 0
+    for (i in seq_len(n_subj)) {
+      idx  <- idx_list[[i]]
+      Xi   <- as.matrix(X[idx, , drop = FALSE])
+      Zi   <- as.matrix(DZ[idx, -1, drop = FALSE])
+      ri   <- as.matrix(Y[idx]) - Xi %*% beta_k - Zi %*% gamma_hat[[i]]
+      rss  <- rss + sum(ri^2) + sum(diag(Zi %*% Sigma_Ui_list[[i]] %*% t(Zi)))
+    }
+    sigma2_k <- max(rss / M, 1e-6)
+
+    # M-step: B (plain or trimmed)
+    if (!do_trim) {
+      B_k <- matrix(0, q, q)
+      for (i in seq_len(n_subj))
+        B_k <- B_k + gamma_hat[[i]] %*% t(gamma_hat[[i]]) + Sigma_Ui_list[[i]]
+      B_k <- B_k / n_subj
+
+    } else {
+      gamma_mat           <- do.call(rbind, lapply(gamma_hat, as.vector))
+      B_cov_list          <- lapply(xx_list, function(xx_i) B_k + sigma2_k * xx_i)
+      B_cov_inv_half_list <- lapply(B_cov_list, rhalfinv)
+      Norm_B              <- do.call(rbind, lapply(seq_len(n_subj), function(i)
+        t(gamma_hat[[i]]) %*% B_cov_inv_half_list[[i]]))
+      chi_stat  <- rowSums(Norm_B^2)
+      cutoff    <- quantile(chi_stat, 1 - trim)
+      trim_idx  <- which(chi_stat <= cutoff)
+      n_keep    <- length(trim_idx)
+
+      if (n_keep < 2) {
+        # Fall back to standard update if too few subjects remain
+        B_k <- matrix(0, q, q)
+        for (i in seq_len(n_subj))
+          B_k <- B_k + gamma_hat[[i]] %*% t(gamma_hat[[i]]) + Sigma_Ui_list[[i]]
+        B_k <- B_k / n_subj
+      } else {
+        simchi      <- rchisq(1e5, df = q)
+        kept_sim    <- sort(simchi)[1:round(1e5 * (1 - trim))]
+        lambda_quan <- q / mean(kept_sim)
+        B_k         <- cov.est(gamma_mat, sigma2_k, XX_sum, n_subj,
+                               rep(lambda_quan, q))
+      }
+    }
+
+    B_k <- (B_k + t(B_k)) / 2
+    eig <- eigen(B_k)
+    eig$values[eig$values < 1e-6] <- 1e-6
+    B_k <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+
+    # E-step
+    B_inv <- rsolve(B_k)
+    for (i in seq_len(n_subj)) {
+      idx     <- idx_list[[i]]
+      Yi      <- as.matrix(Y[idx])
+      Xi      <- as.matrix(X[idx, , drop = FALSE])
+      Zi      <- as.matrix(DZ[idx, -1, drop = FALSE])
+      resid_i <- Yi - Xi %*% beta_k
+      inner_inv          <- rsolve(sigma2_k * B_inv + t(Zi) %*% Zi)
+      Sigma_Ui_list[[i]] <- sigma2_k * inner_inv
+      Vi_inv_r           <- (1 / sigma2_k) *
+        (resid_i - Zi %*% inner_inv %*% t(Zi) %*% resid_i)
+      gamma_hat[[i]]     <- B_k %*% t(Zi) %*% Vi_inv_r
+    }
+
+    beta_history[[it]]   <- beta_k
+    B_history[[it]]      <- B_k
+    gamma_history[[it]]  <- gamma_hat
+    sigma2_history[[it]] <- sigma2_k
+  }
+
+  return(list(
+    beta_history        = beta_history,
+    Sigma_gamma_history = B_history,
+    gamma_history       = gamma_history,
+    sigma2_history      = sigma2_history
+  ))
+}
+
+```
+
+# Model 2 A
+
+```{r}
+# =============================================================================
+# MODEL 2a: em_lmer_plain
+# Plain EM to convergence, no trimming. Output used as input to em_fastmix_trim.
+# =============================================================================
+em_lmer_plain <- function(Y, Des,
+                          random       = "all",
+                          iter         = 100,
+                          lambda_ridge = 1) {
+
+  Y  <- as.matrix(Y); M <- nrow(Y)
+  X  <- as.matrix(Des[, -1]); p <- ncol(X)
+  if (length(random) == 1 && random == "all") random <- 1:p
+  DZ       <- Des[, c(1, random + 1)]
+  n_subj   <- length(unique(Des[, 1]))
+  ID       <- sort(unique(Des[, 1]))
+  idx_list <- lapply(ID, function(id) which(Des[, 1] == id))
+  q        <- length(random)
+
+  # Initialization
+  beta_ols      <- lm.fit(x = X, y = Y)$coefficients
+  residuals_ols <- Y - X %*% beta_ols
+  sigma2_k      <- max(sum(residuals_ols^2) / (M - p), 1e-6)
+  gamma_hat     <- vector("list", n_subj)
+  B_init        <- matrix(0, q, q)
+  for (i in seq_len(n_subj)) {
+    idx            <- idx_list[[i]]
+    Zi             <- as.matrix(DZ[idx, -1, drop = FALSE])
+    Ri             <- residuals_ols[idx]
+    gamma_hat[[i]] <- rsolve(t(Zi) %*% Zi + lambda_ridge * diag(q)) %*% t(Zi) %*% Ri
+    B_init         <- B_init + gamma_hat[[i]] %*% t(gamma_hat[[i]])
+  }
+  B_init <- B_init / n_subj
+  eig    <- eigen(B_init)
+  eig$values[eig$values < 1e-6] <- 1e-6
+  B_k    <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+
+  B_inv         <- rsolve(B_k)
+  Sigma_Ui_list <- vector("list", n_subj)
+  for (i in seq_len(n_subj)) {
+    idx                <- idx_list[[i]]
+    Zi                 <- as.matrix(DZ[idx, -1, drop = FALSE])
+    Sigma_Ui_list[[i]] <- sigma2_k * rsolve(sigma2_k * B_inv + t(Zi) %*% Zi)
+  }
+
+  beta_history   <- vector("list", iter)
+  B_history      <- vector("list", iter)
+  gamma_history  <- vector("list", iter)
+  sigma2_history <- vector("list", iter)
+
+  for (it in seq_len(iter)) {
+
+    # M-step: beta
+    Y_star <- numeric(M)
+    for (i in seq_len(n_subj)) {
+      idx         <- idx_list[[i]]
+      Y_star[idx] <- Y[idx] - as.matrix(DZ[idx, -1, drop = FALSE]) %*% gamma_hat[[i]]
+    }
+    beta_k <- lm.fit(x = X, y = Y_star)$coefficients
+
+    # M-step: sigma2
+    rss <- 0
+    for (i in seq_len(n_subj)) {
+      idx  <- idx_list[[i]]
+      Xi   <- as.matrix(X[idx, , drop = FALSE])
+      Zi   <- as.matrix(DZ[idx, -1, drop = FALSE])
+      ri   <- as.matrix(Y[idx]) - Xi %*% beta_k - Zi %*% gamma_hat[[i]]
+      rss  <- rss + sum(ri^2) + sum(diag(Zi %*% Sigma_Ui_list[[i]] %*% t(Zi)))
+    }
+    sigma2_k <- max(rss / M, 1e-6)
+
+    # M-step: B
+    B_k <- matrix(0, q, q)
+    for (i in seq_len(n_subj))
+      B_k <- B_k + gamma_hat[[i]] %*% t(gamma_hat[[i]]) + Sigma_Ui_list[[i]]
+    B_k <- B_k / n_subj
+    B_k <- (B_k + t(B_k)) / 2
+    eig <- eigen(B_k)
+    eig$values[eig$values < 1e-6] <- 1e-6
+    B_k <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+
+    # E-step
+    B_inv <- rsolve(B_k)
+    for (i in seq_len(n_subj)) {
+      idx     <- idx_list[[i]]
+      Yi      <- as.matrix(Y[idx])
+      Xi      <- as.matrix(X[idx, , drop = FALSE])
+      Zi      <- as.matrix(DZ[idx, -1, drop = FALSE])
+      resid_i <- Yi - Xi %*% beta_k
+      inner_inv          <- rsolve(sigma2_k * B_inv + t(Zi) %*% Zi)
+      Sigma_Ui_list[[i]] <- sigma2_k * inner_inv
+      Vi_inv_r           <- (1 / sigma2_k) *
+        (resid_i - Zi %*% inner_inv %*% t(Zi) %*% resid_i)
+      gamma_hat[[i]]     <- B_k %*% t(Zi) %*% Vi_inv_r
+    }
+
+    beta_history[[it]]   <- beta_k
+    B_history[[it]]      <- B_k
+    gamma_history[[it]]  <- gamma_hat
+    sigma2_history[[it]] <- sigma2_k
+  }
+
+  # Return histories + final values needed by em_fastmix_trim
+  return(list(
+    beta_history        = beta_history,
+    Sigma_gamma_history = B_history,
+    gamma_history       = gamma_history,
+    sigma2_history      = sigma2_history,
+    beta                = beta_k,
+    B                   = B_k,
+    sigma2              = sigma2_k,
+    gamma_hat           = gamma_hat,
+    Sigma_Ui            = Sigma_Ui_list,
+    idx_list            = idx_list,
+    random              = random,
+    q                   = q,
+    Des                 = Des,
+    Y                   = Y,
+    X                   = X,
+    DZ                  = DZ
+  ))
+}
+```
+
+# Model 2 B
+
+```{r}
+# # =============================================================================
+# # MODEL 2b: em_fastmix_trim (CORRECTED)
+# # Post-hoc FastMix trimming pass on output of em_lmer_plain.
+# # =============================================================================
+# em_fastmix_trim <- function(em_fit, trim = 0.5) {
+# 
+#   B         <- em_fit$B
+#   sigma2    <- em_fit$sigma2
+#   beta      <- em_fit$beta
+#   gamma_hat <- em_fit$gamma_hat
+#   Sigma_Ui  <- em_fit$Sigma_Ui
+#   idx_list  <- em_fit$idx_list
+#   X         <- em_fit$X
+#   Y         <- em_fit$Y
+#   DZ        <- em_fit$DZ
+#   n_subj    <- length(gamma_hat)
+#   q         <- em_fit$q
+# 
+#   # 1. Convert EBLUPs to a matrix
+#   gamma_mat <- do.call(rbind, lapply(gamma_hat, as.vector))
+# 
+#   # 2. Use RobustMeanEst to find the Mahalanobis threshold (R) and Inflation Factor
+#   # We use the current B matrix as the baseline covariance for distance calculation
+#   rr <- tryCatch(
+#     RobustMeanEst(gamma_mat, Sigma = B, trim = trim),
+#     error = function(e) list(mu.est = rep(0, q), V.inflation = 1, R = Inf)
+#   )
+#   
+#   # 3. Calculate Mahalanobis distances for all subjects
+#   S.half.inv  <- rhalfinv(B)
+#   gamma_tilde <- gamma_mat %*% S.half.inv
+#   ll          <- sqrt(rowSums(gamma_tilde^2))
+#   
+#   # 4. TRULY subset the data: Find who is safe and who is an outlier
+#   trim_idx    <- which(ll <= rr$R)
+#   outlier_idx <- which(ll > rr$R)
+#   n_keep      <- length(trim_idx)
+# 
+#   if (n_keep < 2) {
+#     warning("em_fastmix_trim: fewer than 2 subjects retained. Returning unchanged.")
+#     em_fit$B_trimmed <- B
+#     return(em_fit)
+#   }
+# 
+#   # 5. Calculate the Trimmed Covariance using ONLY the safe subjects
+#   B_trimmed <- matrix(0, q, q)
+#   for (i in trim_idx) {
+#     # Proper EM update: EBLUP outer product + Posterior Variance
+#     B_trimmed <- B_trimmed + (gamma_hat[[i]] %*% t(gamma_hat[[i]])) + Sigma_Ui[[i]]
+#   }
+#   B_trimmed <- B_trimmed / n_keep
+#   
+#   # 6. Apply the FastMix Bias Correction Inflation
+#   B_trimmed <- B_trimmed * rr$V.inflation
+# 
+#   # Enforce positive definiteness
+#   B_trimmed <- (B_trimmed + t(B_trimmed)) / 2
+#   eig       <- eigen(B_trimmed)
+#   eig$values[eig$values < 1e-6] <- 1e-6
+#   B_trimmed <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+# 
+#   # 7. Re-calculate the EBLUPs (gamma_hat) using the newly corrected B matrix
+#   B_trimmed_inv  <- rsolve(B_trimmed)
+#   gamma_hat_new  <- vector("list", n_subj)
+#   Sigma_Ui_new   <- vector("list", n_subj)
+#   
+#   for (i in seq_len(n_subj)) {
+#     idx     <- idx_list[[i]]
+#     Yi      <- as.matrix(Y[idx])
+#     Xi      <- as.matrix(X[idx, , drop = FALSE])
+#     Zi      <- as.matrix(DZ[idx, -1, drop = FALSE])
+#     resid_i <- Yi - Xi %*% beta
+#     
+#     inner_inv          <- rsolve(sigma2 * B_trimmed_inv + t(Zi) %*% Zi)
+#     Sigma_Ui_new[[i]]  <- sigma2 * inner_inv
+#     Vi_inv_r           <- (1 / sigma2) * (resid_i - Zi %*% inner_inv %*% t(Zi) %*% resid_i)
+#     gamma_hat_new[[i]] <- B_trimmed %*% t(Zi) %*% Vi_inv_r
+#   }
+# 
+#   # Package and return
+#   em_fit$B_trimmed         <- B_trimmed
+#   em_fit$gamma_hat_trimmed <- gamma_hat_new
+#   em_fit$Sigma_Ui_trimmed  <- Sigma_Ui_new
+#   em_fit$trim_idx          <- trim_idx
+#   em_fit$outlier_idx       <- outlier_idx
+#   em_fit$V_inflation       <- rr$V.inflation
+# 
+#   return(em_fit)
+# }
+
+# Helper function: Calculates exact theoretical cutoff and covariance inflation
+get_cov_inflation <- function(q, trim_prop) {
+  # Find the Chi-Square distance cutoff (e.g., 95th percentile)
+  c_thresh <- qchisq(1 - trim_prop, df = q)
+  # Exact theoretical inflation factor for truncated Chi-Square covariance
+  inflation <- (1 - trim_prop) / pchisq(c_thresh, df = q + 2)
+  return(list(cutoff = c_thresh, inflation = inflation))
+}
+
+# =============================================================================
+# MODEL 2b: em_fastmix_trim (CORRECTED)
+# Post-hoc FastMix trimming pass on output of em_lmer_plain.
+# =============================================================================
+em_fastmix_trim <- function(em_fit, trim = 0.05) {
+
+  B         <- em_fit$B
+  sigma2    <- em_fit$sigma2
+  beta      <- em_fit$beta
+  gamma_hat <- em_fit$gamma_hat
+  Sigma_Ui  <- em_fit$Sigma_Ui
+  idx_list  <- em_fit$idx_list
+  X         <- em_fit$X
+  Y         <- em_fit$Y
+  DZ        <- em_fit$DZ
+  n_subj    <- length(gamma_hat)
+  q         <- em_fit$q
+
+  # 1. Convert EBLUPs to a matrix
+  gamma_mat <- do.call(rbind, lapply(gamma_hat, as.vector))
+  
+  # 2. Get exact theoretical cutoff and inflation multiplier
+  infl_info <- get_cov_inflation(q, trim)
+  
+  # 3. Calculate squared Mahalanobis distances
+  S.half.inv  <- rhalfinv(B)
+  chi_stat <- rowSums((gamma_mat %*% S.half.inv)^2)
+  
+  # 4. Identify safe subjects using the theoretical cutoff
+  trim_idx    <- which(chi_stat <= infl_info$cutoff)
+  outlier_idx <- which(chi_stat > infl_info$cutoff)
+  n_keep      <- length(trim_idx)
+
+  if (n_keep < 2) {
+    warning("Too few subjects retained. Returning unchanged.")
+    em_fit$B_trimmed <- B
+    return(em_fit)
+  }
+
+  # 5. Calculate trimmed covariance using ONLY the safe subjects
+  # (Proper EM update: EBLUP outer product + Posterior Variance)
+  B_trimmed <- matrix(0, q, q)
+  for (i in trim_idx) {
+    B_trimmed <- B_trimmed + (gamma_hat[[i]] %*% t(gamma_hat[[i]])) + Sigma_Ui[[i]]
+  }
+  B_trimmed <- B_trimmed / n_keep
+  
+  # 6. Apply the EXACT theoretical FastMix inflation factor
+  B_trimmed <- B_trimmed * infl_info$inflation
+
+  # Enforce positive definiteness
+  B_trimmed <- (B_trimmed + t(B_trimmed)) / 2
+  eig       <- eigen(B_trimmed)
+  eig$values[eig$values < 1e-6] <- 1e-6
+  B_trimmed <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+
+  # 7. Recalculate EBLUPs (gamma) using the newly corrected B matrix
+  B_trimmed_inv  <- rsolve(B_trimmed)
+  gamma_hat_new  <- vector("list", n_subj)
+  Sigma_Ui_new   <- vector("list", n_subj)
+  
+  for (i in seq_len(n_subj)) {
+    idx     <- idx_list[[i]]
+    Yi      <- as.matrix(Y[idx])
+    Xi      <- as.matrix(X[idx, , drop = FALSE])
+    Zi      <- as.matrix(DZ[idx, -1, drop = FALSE])
+    resid_i <- Yi - Xi %*% beta
+    
+    inner_inv          <- rsolve(sigma2 * B_trimmed_inv + t(Zi) %*% Zi)
+    Sigma_Ui_new[[i]]  <- sigma2 * inner_inv
+    Vi_inv_r           <- (1 / sigma2) * (resid_i - Zi %*% inner_inv %*% t(Zi) %*% resid_i)
+    gamma_hat_new[[i]] <- B_trimmed %*% t(Zi) %*% Vi_inv_r
+  }
+
+  # Package and return
+  em_fit$B_trimmed         <- B_trimmed
+  em_fit$gamma_hat_trimmed <- gamma_hat_new
+  em_fit$Sigma_Ui_trimmed  <- Sigma_Ui_new
+  em_fit$trim_idx          <- trim_idx
+  em_fit$outlier_idx       <- outlier_idx
+  
+  return(em_fit)
+}
+```
+
+
+# Run all Models
+
+
+```{r}
+EM_ITER= 30
+TRIM_VAL = 0.05
+
+n_cores <- availableCores() - 10
+plan(multisession, workers = n_cores)
+
+ 
+
+cat("Parallel plan set! Running across", n_cores, "cores...\n\n")
+cat("Pass 1/4: Running em_lmer_combined (EM + trim inside loop)...\n")
+start1 <- Sys.time()
+
+with_progress({
+  p <- progressor(along = sim_list)
+  results_combined <- future_lapply(sim_list, function(df) {
+    p()
+    res <- em_lmer_combined(
+      df$Y,
+      df[, c("ID", "Intercept", "Var1", "Var2")],
+      random = "all", iter = EM_ITER, lambda_ridge = 1,
+      do_trim = TRUE, trim = TRIM_VAL
+    )
+    list(
+      beta   = as.numeric(res$beta_history[[EM_ITER]]),
+      B      = res$Sigma_gamma_history[[EM_ITER]],
+      gamma  = lapply(res$gamma_history[[EM_ITER]], as.numeric),
+      sigma2 = as.numeric(res$sigma2_history[[EM_ITER]]),
+      sim_id = df$sim_id[1]
+    )
+  }, future.seed = TRUE)
+})
+
+cat("  Done in", round(Sys.time() - start1, 2), "secs\n")
+gc()
+
+# ---------------------------------------------------------
+# PASS 2: em_lmer_plain (plain EM, no trimming at all)
+# ---------------------------------------------------------
+cat("Pass 2/4: Running em_lmer_plain (no trimming)...\n")
+start2 <- Sys.time()
+
+with_progress({
+  p <- progressor(along = sim_list)
+  results_plain <- future_lapply(sim_list, function(df) {
+    p()
+    res <- em_lmer_plain(
+      df$Y,
+      df[, c("ID", "Intercept", "Var1", "Var2")],
+      random = "all", iter = EM_ITER, lambda_ridge = 1
+    )
+    list(
+      beta   = as.numeric(res$beta_history[[EM_ITER]]),
+      B      = res$Sigma_gamma_history[[EM_ITER]],
+      gamma  = lapply(res$gamma_history[[EM_ITER]], as.numeric),
+      sigma2 = as.numeric(res$sigma2_history[[EM_ITER]]),
+      sim_id = df$sim_id[1]
+    )
+  }, future.seed = TRUE)
+})
+
+cat("  Done in", round(Sys.time() - start2, 2), "secs\n")
+gc()
+
+# ---------------------------------------------------------
+# PASS 3: em_lmer_plain + em_fastmix_trim (two-stage)
+# ---------------------------------------------------------
+cat("Pass 3/4: Running em_lmer_plain + em_fastmix_trim (two-stage)...\n")
+start3 <- Sys.time()
+
+with_progress({
+  p <- progressor(along = sim_list)
+  results_twostage <- future_lapply(sim_list, function(df) {
+    p()
+    res_plain    <- em_lmer_plain(
+      df$Y,
+      df[, c("ID", "Intercept", "Var1", "Var2")],
+      random = "all", iter = EM_ITER, lambda_ridge = 1
+    )
+    res_twostage <- em_fastmix_trim(res_plain, trim = TRIM_VAL)
+    list(
+      beta   = as.numeric(res_twostage$beta_history[[EM_ITER]]),
+      B      = res_twostage$B_trimmed,
+      gamma  = lapply(res_twostage$gamma_hat_trimmed, as.numeric),
+      sigma2 = as.numeric(res_twostage$sigma2_history[[EM_ITER]]),
+      sim_id = df$sim_id[1]
+    )
+  }, future.seed = TRUE)
+})
+
+cat("  Done in", round(Sys.time() - start3, 2), "secs\n")
+gc()
+
+# ---------------------------------------------------------
+# PASS 4: lmer
+# ---------------------------------------------------------
+cat("Pass 4/4: Running lmer...\n")
+start4 <- Sys.time()
+
+with_progress({
+  p <- progressor(along = sim_list)
+  results_lmer <- future_lapply(sim_list, function(df) {
+    p()
+    lmer_model <- suppressMessages(suppressWarnings(
+      lmer(Y ~ Var1 + Var2 + (1 + Var1 + Var2 | ID),
+           data    = df,
+           REML    = FALSE,
+           control = lmerControl(calc.derivs = FALSE))
+    ))
+    list(
+      beta   = as.numeric(fixef(lmer_model)),
+      B      = as.matrix(VarCorr(lmer_model)$ID),
+      gamma  = as.matrix(ranef(lmer_model)$ID),
+      sigma2 = sigma(lmer_model)^2,
+      sim_id = df$sim_id[1]
+    )
+  }, future.packages = c("lme4"), future.seed = TRUE)
+})
+
+cat("  Done in", round(Sys.time() - start4, 2), "secs\n")
+gc()
+
+cat("\nAll four passes complete.\n")
+
+```
+
+```{r}
+rmse_table <- do.call(rbind, lapply(seq_along(sim_list), function(s) {
+
+  rc  <- results_combined[[s]]
+  rp  <- results_plain[[s]]
+  rts <- results_twostage[[s]]
+  rlm <- results_lmer[[s]]
+
+  # Regenerate true gamma for this simulation (must match Chunk 1 seed)
+  set.seed(2026 + s)
+  gamma_true <- MASS::mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+
+  gamma_c_mat  <- do.call(rbind, rc$gamma)
+  gamma_p_mat  <- do.call(rbind, rp$gamma)
+  gamma_ts_mat <- do.call(rbind, rts$gamma)
+
+  c(
+    # --- RMSE -----------------------------------------------------------------
+    rmse_beta_combined  = sqrt(mean((rc$beta  - beta_true)^2)),
+    rmse_beta_plain     = sqrt(mean((rp$beta  - beta_true)^2)),
+    rmse_beta_twostage  = sqrt(mean((rts$beta - beta_true)^2)),
+    rmse_beta_lmer      = sqrt(mean((rlm$beta - beta_true)^2)),
+
+    rmse_cov_combined   = sqrt(mean((rc$B  - B_true)^2)),
+    rmse_cov_plain      = sqrt(mean((rp$B  - B_true)^2)),
+    rmse_cov_twostage   = sqrt(mean((rts$B - B_true)^2)),
+    rmse_cov_lmer       = sqrt(mean((rlm$B - B_true)^2)),
+
+    rmse_gamma_combined = sqrt(mean((gamma_c_mat  - gamma_true)^2)),
+    rmse_gamma_plain    = sqrt(mean((gamma_p_mat  - gamma_true)^2)),
+    rmse_gamma_twostage = sqrt(mean((gamma_ts_mat - gamma_true)^2)),
+    rmse_gamma_lmer     = sqrt(mean((rlm$gamma    - gamma_true)^2)),
+
+    # --- Estimates for parameter average table --------------------------------
+    beta_c1  = rc$beta[1],  beta_c2  = rc$beta[2],  beta_c3  = rc$beta[3],
+    beta_p1  = rp$beta[1],  beta_p2  = rp$beta[2],  beta_p3  = rp$beta[3],
+    beta_ts1 = rts$beta[1], beta_ts2 = rts$beta[2], beta_ts3 = rts$beta[3],
+    beta_lm1 = rlm$beta[1], beta_lm2 = rlm$beta[2], beta_lm3 = rlm$beta[3],
+
+    Bc11  = rc$B[1,1],  Bc12  = rc$B[1,2],  Bc13  = rc$B[1,3],
+    Bc22  = rc$B[2,2],  Bc23  = rc$B[2,3],  Bc33  = rc$B[3,3],
+
+    Bp11  = rp$B[1,1],  Bp12  = rp$B[1,2],  Bp13  = rp$B[1,3],
+    Bp22  = rp$B[2,2],  Bp23  = rp$B[2,3],  Bp33  = rp$B[3,3],
+
+    Bts11 = rts$B[1,1], Bts12 = rts$B[1,2], Bts13 = rts$B[1,3],
+    Bts22 = rts$B[2,2], Bts23 = rts$B[2,3], Bts33 = rts$B[3,3],
+
+    Blm11 = rlm$B[1,1], Blm12 = rlm$B[1,2], Blm13 = rlm$B[1,3],
+    Blm22 = rlm$B[2,2], Blm23 = rlm$B[2,3], Blm33 = rlm$B[3,3],
+
+    sigma2_c  = rc$sigma2,
+    sigma2_p  = rp$sigma2,
+    sigma2_ts = rts$sigma2,
+    sigma2_lm = rlm$sigma2
+  )
+}))
+
+avg <- colMeans(rmse_table)
+
+
+# =========================================================
+# CHUNK 4: Print results
+# =========================================================
+
+make_B <- function(d11, d12, d13, d22, d23, d33) {
+  matrix(c(d11, d12, d13,
+           d12, d22, d23,
+           d13, d23, d33), nrow = 3)
+}
+
+avg_B_c  <- make_B(avg["Bc11"],  avg["Bc12"],  avg["Bc13"],
+                   avg["Bc22"],  avg["Bc23"],  avg["Bc33"])
+avg_B_p  <- make_B(avg["Bp11"],  avg["Bp12"],  avg["Bp13"],
+                   avg["Bp22"],  avg["Bp23"],  avg["Bp33"])
+avg_B_ts <- make_B(avg["Bts11"], avg["Bts12"], avg["Bts13"],
+                   avg["Bts22"], avg["Bts23"], avg["Bts33"])
+avg_B_lm <- make_B(avg["Blm11"], avg["Blm12"], avg["Blm13"],
+                   avg["Blm22"], avg["Blm23"], avg["Blm33"])
+
+SEP  <- paste0(rep("=", 76), collapse = "")
+THIN <- paste0(rep("-", 76), collapse = "")
+
+col1 <- sprintf("EM+Trim(%g)", TRIM_VAL)   # combined: trim inside loop
+col2 <- "Plain EM"                          # plain EM, no trim
+col3 <- sprintf("EM->Trim(%g)", TRIM_VAL)  # two-stage: EM then post-hoc trim
+col4 <- "lme4"
+
+cat("\n", SEP, "\n", sep = "")
+cat(sprintf(" Four-Way Comparison — Averaged over %d Simulations\n",
+            length(sim_list)))
+cat(sprintf(" trim = %.1f   |   EM iterations = %d\n", TRIM_VAL, EM_ITER))
+cat(SEP, "\n", sep = "")
+
+# --- Fixed Effects ---
+cat("\n Fixed Effects (Beta)\n", THIN, "\n", sep = "")
+cat(sprintf("  %-18s  %8s  %8s  %8s\n", "", "Beta_0", "Beta_1", "Beta_2"))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", "True",
+            beta_true[1], beta_true[2], beta_true[3]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col1,
+            avg["beta_c1"],  avg["beta_c2"],  avg["beta_c3"]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col2,
+            avg["beta_p1"],  avg["beta_p2"],  avg["beta_p3"]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col3,
+            avg["beta_ts1"], avg["beta_ts2"], avg["beta_ts3"]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col4,
+            avg["beta_lm1"], avg["beta_lm2"], avg["beta_lm3"]))
+
+# --- Residual Variance ---
+cat("\n Residual Variance (sigma^2)\n", THIN, "\n", sep = "")
+cat(sprintf("  %-18s  %8.4f\n", "True",  sigma2_true))
+cat(sprintf("  %-18s  %8.4f\n", col1,    avg["sigma2_c"]))
+cat(sprintf("  %-18s  %8.4f\n", col2,    avg["sigma2_p"]))
+cat(sprintf("  %-18s  %8.4f\n", col3,    avg["sigma2_ts"]))
+cat(sprintf("  %-18s  %8.4f\n", col4,    avg["sigma2_lm"]))
+
+# --- Covariance Matrix B ---
+print_B <- function(label, B_mat) {
+  cat(sprintf("  %s:\n", label))
+  for (r in 1:3)
+    cat(sprintf("    %8.4f  %8.4f  %8.4f\n", B_mat[r,1], B_mat[r,2], B_mat[r,3]))
+}
+cat("\n Covariance Matrix B\n", THIN, "\n", sep = "")
+print_B("True",  B_true)
+print_B(col1,    avg_B_c)
+print_B(col2,    avg_B_p)
+print_B(col3,    avg_B_ts)
+print_B(col4,    avg_B_lm)
+
+# --- RMSE ---
+cat("\n RMSE of Parameter Estimates\n", THIN, "\n", sep = "")
+cat(sprintf("  %-20s  %12s  %12s  %12s  %12s\n", "", col1, col2, col3, col4))
+cat(sprintf("  %-20s  %12.6f  %12.6f  %12.6f  %12.6f\n",
+            "Fixed Effects (Beta)",
+            avg["rmse_beta_combined"], avg["rmse_beta_plain"],
+            avg["rmse_beta_twostage"], avg["rmse_beta_lmer"]))
+cat(sprintf("  %-20s  %12.6f  %12.6f  %12.6f  %12.6f\n",
+            "Covariance B",
+            avg["rmse_cov_combined"],  avg["rmse_cov_plain"],
+            avg["rmse_cov_twostage"],  avg["rmse_cov_lmer"]))
+cat(sprintf("  %-20s  %12.6f  %12.6f  %12.6f  %12.6f\n",
+            "Random Effects",
+            avg["rmse_gamma_combined"], avg["rmse_gamma_plain"],
+            avg["rmse_gamma_twostage"], avg["rmse_gamma_lmer"]))
+cat(SEP, "\n\n", sep = "")
+
+
+```
+```{r}
+
+
+```
+# Outlier Data
+
+```{r}
+# =========================================================
+# CHUNK 1: Setup and Data Generation with Outliers
+# =========================================================
+
+n_sims <- 1000       # Number of simulations
+n_subj <- 100        # Number of subjects
+m_points <- 5        # Time points per subject
+N <- n_subj * m_points
+
+# True Parameters for the "Bulk" (Clean) Data
+beta_true <- c(5, 2, -1.5)
+sigma2_true <- 1.0
+B_true <- matrix(c(2.0, 0.5, 0.2, 
+                   0.5, 1.0, 0.1,
+                   0.2, 0.1, 0.5), nrow = 3)
+
+# Constant design matrix components
+ID <- rep(1:n_subj, each = m_points)
+Intercept <- rep(1, N)
+Var1 <- rep(0:(m_points-1), n_subj) 
+
+set.seed(2026) 
+Var2 <- rnorm(N, mean = 0, sd = 1)
+Des <- data.frame(ID = ID, Intercept = Intercept, Var1 = Var1, Var2 = Var2)
+X <- as.matrix(Des[, -1])
+Z <- as.matrix(Des[, -1])
+
+# Outlier Configuration: 5% of subjects will have massive random effects
+outlier_prop <- 0.05
+n_outliers <- floor(n_subj * outlier_prop)
+
+# Pre-allocate list
+sim_list <- vector("list", n_sims)
+
+cat(sprintf("Generating %d datasets with %.0f%% subject-level outliers...\n", n_sims, outlier_prop*100))
+
+for (s in 1:n_sims) {
+  set.seed(2026 + s)
+  
+  # 1. Generate normal random effects
+  gamma_true <- mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+  
+  # 2. Inject Outliers: Shift the random effects of selected subjects extremely far
+  outlier_idx <- sample(1:n_subj, n_outliers)
+  for(idx in outlier_idx) {
+    # Add a massive shift (e.g., between 8 and 12 units) in the direction of their initial sign
+    gamma_true[idx, ] <- gamma_true[idx, ] + sign(gamma_true[idx, ]) * runif(3, 8, 12)
+  }
+  
+  # 3. Generate Response (Y)
+  Y <- numeric(N)
+  for (i in 1:n_subj) {
+    idx <- which(ID == i)
+    epsilon <- rnorm(length(idx), mean = 0, sd = sqrt(sigma2_true))
+    Y[idx] <- X[idx, ] %*% beta_true + Z[idx, ] %*% gamma_true[i, ] + epsilon
+  }
+  
+  # 4. Store in sim_list
+  df <- Des
+  df$Y <- Y
+  df$sim_id <- s
+  sim_list[[s]] <- df
+}
+
+cat("Data generation complete.\n\n")
+```
+
+
+# Run all models on outliers
+
+
+```{r}
+EM_ITER= 30
+TRIM_VAL = 0.05
+
+# Safely set cores (leaves 2 free so your OS doesn't freeze)
+n_cores <- max(1, availableCores() - 12)
+plan(multisession, workers = n_cores)
+
+
+
+cat("Parallel plan set! Running across", n_cores, "cores...\n\n")
+
+# ---------------------------------------------------------
+# PASS 1: em_lmer_combined (EM + trim inside loop)
+# ---------------------------------------------------------
+cat("Pass 1/4: Running em_lmer_combined (EM + trim inside loop)...\n")
+start1 <- Sys.time()
+with_progress({
+  p <- progressor(along = sim_list)
+  results_combined <- future_lapply(sim_list, function(df) {
+    p()
+    res <- em_lmer_combined(
+      df$Y,
+      df[, c("ID", "Intercept", "Var1", "Var2")],
+      random = "all", iter = EM_ITER, lambda_ridge = 1,
+      do_trim = TRUE, trim = TRIM_VAL # Assuming your function arg is trim_prop based on our earlier code
+    )
+    list(
+      beta   = as.numeric(res$beta_history[[EM_ITER]]),
+      B      = res$Sigma_gamma_history[[EM_ITER]],
+      gamma  = lapply(res$gamma_history[[EM_ITER]], as.numeric),
+      sigma2 = as.numeric(res$sigma2_history[[EM_ITER]]),
+      sim_id = df$sim_id[1]
+    )
+  }, future.seed = TRUE)
+})
+cat("  Done in", round(Sys.time() - start1, 2), "secs\n")
+gc()
+
+# ---------------------------------------------------------
+# PASS 2: em_lmer_plain (plain EM, no trimming at all)
+# ---------------------------------------------------------
+cat("Pass 2/4: Running em_lmer_plain (no trimming)...\n")
+start2 <- Sys.time()
+with_progress({
+  p <- progressor(along = sim_list)
+  results_plain <- future_lapply(sim_list, function(df) {
+    p()
+    res <- em_lmer_plain( # Assumes this is identical to your original plain EM function
+      df$Y,
+      df[, c("ID", "Intercept", "Var1", "Var2")],
+      random = "all", iter = EM_ITER, lambda_ridge = 1
+    )
+    list(
+      beta   = as.numeric(res$beta_history[[EM_ITER]]),
+      B      = res$Sigma_gamma_history[[EM_ITER]],
+      gamma  = lapply(res$gamma_history[[EM_ITER]], as.numeric),
+      sigma2 = as.numeric(res$sigma2_history[[EM_ITER]]),
+      sim_id = df$sim_id[1]
+    )
+  }, future.seed = TRUE)
+})
+cat("  Done in", round(Sys.time() - start2, 2), "secs\n")
+gc()
+
+# ---------------------------------------------------------
+# PASS 3: em_lmer_plain + em_fastmix_trim (two-stage)
+# ---------------------------------------------------------
+cat("Pass 3/4: Running em_lmer_plain + em_fastmix_trim (two-stage)...\n")
+start3 <- Sys.time()
+with_progress({
+  p <- progressor(along = sim_list)
+  results_twostage <- future_lapply(sim_list, function(df) {
+    p()
+    res_plain    <- em_lmer_plain(
+      df$Y,
+      df[, c("ID", "Intercept", "Var1", "Var2")],
+      random = "all", iter = EM_ITER, lambda_ridge = 1
+    )
+    # Assumes you have wrapper em_fastmix_trim available
+    res_twostage <- em_fastmix_trim(res_plain, trim = TRIM_VAL) 
+    list(
+      beta   = as.numeric(res_twostage$beta_history[[EM_ITER]]),
+      B      = res_twostage$B_trimmed,
+      gamma  = lapply(res_twostage$gamma_hat_trimmed, as.numeric),
+      sigma2 = as.numeric(res_twostage$sigma2_history[[EM_ITER]]),
+      sim_id = df$sim_id[1]
+    )
+  }, future.seed = TRUE)
+})
+cat("  Done in", round(Sys.time() - start3, 2), "secs\n")
+gc()
+
+# ---------------------------------------------------------
+# PASS 4: lmer
+# ---------------------------------------------------------
+cat("Pass 4/4: Running lmer...\n")
+start4 <- Sys.time()
+with_progress({
+  p <- progressor(along = sim_list)
+  results_lmer <- future_lapply(sim_list, function(df) {
+    p()
+    lmer_model <- suppressMessages(suppressWarnings(
+      lmer(Y ~ Var1 + Var2 + (1 + Var1 + Var2 | ID),
+           data    = df,
+           REML    = FALSE,
+           control = lmerControl(calc.derivs = FALSE))
+    ))
+    list(
+      beta   = as.numeric(fixef(lmer_model)),
+      B      = as.matrix(VarCorr(lmer_model)$ID),
+      gamma  = as.matrix(ranef(lmer_model)$ID),
+      sigma2 = sigma(lmer_model)^2,
+      sim_id = df$sim_id[1]
+    )
+  }, future.packages = c("lme4"), future.seed = TRUE)
+})
+cat("  Done in", round(Sys.time() - start4, 2), "secs\n")
+gc()
+
+cat("\nAll four passes complete.\n")
+```
+
+```{r}
+# =========================================================
+# CHUNK 3: Calculate RMSE and Print Results
+# =========================================================
+
+rmse_table <- do.call(rbind, lapply(seq_along(sim_list), function(s) {
+
+  rc  <- results_combined[[s]]
+  rp  <- results_plain[[s]]
+  rts <- results_twostage[[s]]
+  rlm <- results_lmer[[s]]
+
+  # Regenerate true gamma FOR THIS EXACT RUN, INCLUDING THE OUTLIERS!
+  set.seed(2026 + s)
+  gamma_true <- MASS::mvrnorm(n_subj, mu = c(0, 0, 0), Sigma = B_true)
+  outlier_idx <- sample(1:n_subj, n_outliers)
+  for(idx in outlier_idx) {
+    gamma_true[idx, ] <- gamma_true[idx, ] + sign(gamma_true[idx, ]) * runif(3, 8, 12)
+  }
+
+  gamma_c_mat  <- do.call(rbind, rc$gamma)
+  gamma_p_mat  <- do.call(rbind, rp$gamma)
+  gamma_ts_mat <- do.call(rbind, rts$gamma)
+
+  c(
+    # --- RMSE -----------------------------------------------------------------
+    rmse_beta_combined  = sqrt(mean((rc$beta  - beta_true)^2)),
+    rmse_beta_plain     = sqrt(mean((rp$beta  - beta_true)^2)),
+    rmse_beta_twostage  = sqrt(mean((rts$beta - beta_true)^2)),
+    rmse_beta_lmer      = sqrt(mean((rlm$beta - beta_true)^2)),
+
+    # Notice we compare Covariance to B_true (the CLEAN population target)
+    rmse_cov_combined   = sqrt(mean((rc$B  - B_true)^2)),
+    rmse_cov_plain      = sqrt(mean((rp$B  - B_true)^2)),
+    rmse_cov_twostage   = sqrt(mean((rts$B - B_true)^2)),
+    rmse_cov_lmer       = sqrt(mean((rlm$B - B_true)^2)),
+
+    # We compare EBLUPs to the ACTUAL realized gamma (including outliers)
+    rmse_gamma_combined = sqrt(mean((gamma_c_mat  - gamma_true)^2)),
+    rmse_gamma_plain    = sqrt(mean((gamma_p_mat  - gamma_true)^2)),
+    rmse_gamma_twostage = sqrt(mean((gamma_ts_mat - gamma_true)^2)),
+    rmse_gamma_lmer     = sqrt(mean((rlm$gamma    - gamma_true)^2)),
+
+    # --- Estimates for parameter average table --------------------------------
+    beta_c1  = rc$beta[1],  beta_c2  = rc$beta[2],  beta_c3  = rc$beta[3],
+    beta_p1  = rp$beta[1],  beta_p2  = rp$beta[2],  beta_p3  = rp$beta[3],
+    beta_ts1 = rts$beta[1], beta_ts2 = rts$beta[2], beta_ts3 = rts$beta[3],
+    beta_lm1 = rlm$beta[1], beta_lm2 = rlm$beta[2], beta_lm3 = rlm$beta[3],
+
+    Bc11  = rc$B[1,1],  Bc12  = rc$B[1,2],  Bc13  = rc$B[1,3],
+    Bc22  = rc$B[2,2],  Bc23  = rc$B[2,3],  Bc33  = rc$B[3,3],
+
+    Bp11  = rp$B[1,1],  Bp12  = rp$B[1,2],  Bp13  = rp$B[1,3],
+    Bp22  = rp$B[2,2],  Bp23  = rp$B[2,3],  Bp33  = rp$B[3,3],
+
+    Bts11 = rts$B[1,1], Bts12 = rts$B[1,2], Bts13 = rts$B[1,3],
+    Bts22 = rts$B[2,2], Bts23 = rts$B[2,3], Bts33 = rts$B[3,3],
+
+    Blm11 = rlm$B[1,1], Blm12 = rlm$B[1,2], Blm13 = rlm$B[1,3],
+    Blm22 = rlm$B[2,2], Blm23 = rlm$B[2,3], Blm33 = rlm$B[3,3],
+
+    sigma2_c  = rc$sigma2,
+    sigma2_p  = rp$sigma2,
+    sigma2_ts = rts$sigma2,
+    sigma2_lm = rlm$sigma2
+  )
+}))
+
+avg <- colMeans(rmse_table)
+
+# =========================================================
+# CHUNK 4: Print results
+# =========================================================
+
+make_B <- function(d11, d12, d13, d22, d23, d33) {
+  matrix(c(d11, d12, d13,
+           d12, d22, d23,
+           d13, d23, d33), nrow = 3)
+}
+
+avg_B_c  <- make_B(avg["Bc11"],  avg["Bc12"],  avg["Bc13"],
+                   avg["Bc22"],  avg["Bc23"],  avg["Bc33"])
+avg_B_p  <- make_B(avg["Bp11"],  avg["Bp12"],  avg["Bp13"],
+                   avg["Bp22"],  avg["Bp23"],  avg["Bp33"])
+avg_B_ts <- make_B(avg["Bts11"], avg["Bts12"], avg["Bts13"],
+                   avg["Bts22"], avg["Bts23"], avg["Bts33"])
+avg_B_lm <- make_B(avg["Blm11"], avg["Blm12"], avg["Blm13"],
+                   avg["Blm22"], avg["Blm23"], avg["Blm33"])
+
+SEP  <- paste0(rep("=", 76), collapse = "")
+THIN <- paste0(rep("-", 76), collapse = "")
+
+col1 <- sprintf("EM+Trim(%g)", TRIM_VAL)   # combined: trim inside loop
+col2 <- "Plain EM"                          # plain EM, no trim
+col3 <- sprintf("EM->Trim(%g)", TRIM_VAL)  # two-stage: EM then post-hoc trim
+col4 <- "lme4"
+
+cat("\n", SEP, "\n", sep = "")
+cat(sprintf(" Four-Way Comparison — Averaged over %d Simulations\n",
+            length(sim_list)))
+cat(sprintf(" trim = %.2f   |   EM iterations = %d\n", TRIM_VAL, EM_ITER))
+cat(SEP, "\n", sep = "")
+
+# --- Fixed Effects ---
+cat("\n Fixed Effects (Beta)\n", THIN, "\n", sep = "")
+cat(sprintf("  %-18s  %8s  %8s  %8s\n", "", "Beta_0", "Beta_1", "Beta_2"))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", "True",
+            beta_true[1], beta_true[2], beta_true[3]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col1,
+            avg["beta_c1"],  avg["beta_c2"],  avg["beta_c3"]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col2,
+            avg["beta_p1"],  avg["beta_p2"],  avg["beta_p3"]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col3,
+            avg["beta_ts1"], avg["beta_ts2"], avg["beta_ts3"]))
+cat(sprintf("  %-18s  %8.4f  %8.4f  %8.4f\n", col4,
+            avg["beta_lm1"], avg["beta_lm2"], avg["beta_lm3"]))
+
+# --- Residual Variance ---
+cat("\n Residual Variance (sigma^2)\n", THIN, "\n", sep = "")
+cat(sprintf("  %-18s  %8.4f\n", "True",  sigma2_true))
+cat(sprintf("  %-18s  %8.4f\n", col1,    avg["sigma2_c"]))
+cat(sprintf("  %-18s  %8.4f\n", col2,    avg["sigma2_p"]))
+cat(sprintf("  %-18s  %8.4f\n", col3,    avg["sigma2_ts"]))
+cat(sprintf("  %-18s  %8.4f\n", col4,    avg["sigma2_lm"]))
+
+# --- Covariance Matrix B ---
+print_B <- function(label, B_mat) {
+  cat(sprintf("  %s:\n", label))
+  for (r in 1:3)
+    cat(sprintf("    %8.4f  %8.4f  %8.4f\n", B_mat[r,1], B_mat[r,2], B_mat[r,3]))
+}
+cat("\n Covariance Matrix B\n", THIN, "\n", sep = "")
+print_B("True",  B_true)
+print_B(col1,    avg_B_c)
+print_B(col2,    avg_B_p)
+print_B(col3,    avg_B_ts)
+print_B(col4,    avg_B_lm)
+
+# --- RMSE ---
+cat("\n RMSE of Parameter Estimates\n", THIN, "\n", sep = "")
+cat(sprintf("  %-20s  %12s  %12s  %12s  %12s\n", "", col1, col2, col3, col4))
+cat(sprintf("  %-20s  %12.6f  %12.6f  %12.6f  %12.6f\n",
+            "Fixed Effects (Beta)",
+            avg["rmse_beta_combined"], avg["rmse_beta_plain"],
+            avg["rmse_beta_twostage"], avg["rmse_beta_lmer"]))
+cat(sprintf("  %-20s  %12.6f  %12.6f  %12.6f  %12.6f\n",
+            "Covariance B",
+            avg["rmse_cov_combined"],  avg["rmse_cov_plain"],
+            avg["rmse_cov_twostage"],  avg["rmse_cov_lmer"]))
+cat(sprintf("  %-20s  %12.6f  %12.6f  %12.6f  %12.6f\n",
+            "Random Effects",
+            avg["rmse_gamma_combined"], avg["rmse_gamma_plain"],
+            avg["rmse_gamma_twostage"], avg["rmse_gamma_lmer"]))
+cat(SEP, "\n\n", sep = "")
+```
+

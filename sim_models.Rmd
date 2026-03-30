@@ -1749,7 +1749,7 @@ head(sim)
 generate_longitudinal <- function(
   n_subjects = 50,
   n_timepoints = 5,
-  n_covariates = 3,
+  n_covariates = 2,
   cov_trends = rep(0, 3),
   beta = rep(1, 3),
   random_intercept_sd = 0.5,
@@ -1891,11 +1891,11 @@ for (i in 1:n_sims) {
   sim <- generate_longitudinal(
     n_subjects = 50,
     n_timepoints = 10,
-    n_covariates = 3,
-    cov_trends = c(2.25, -1.25, 0.65),
-    beta = c(1, 2, -1),
+    n_covariates = 1,
+    cov_trends = c(2.25),
+    beta = c(1),
     random_intercept_sd = 1,
-    random_slope_sd = c(0.25, 0.75, 0.5),
+    random_slope_sd = c(0.25),
     noise_sd = 1,
     include_intercept = TRUE,
     baseline_intercept = 2
@@ -1925,9 +1925,9 @@ for (i in 1:n_sims) {
 ```{r data_prep_2}
 
   df_simple = sim_list[[335]]
-  RAND_LIST = c(1,2,3,4)
+  RAND_LIST = c(1,2)
   df_simple$X00 = 1
-  Des = df_simple[,c(1,4,5,6,7)]
+  Des = df_simple[,c(1,4,5)]
   y_values = df_simple[3]
   
   
@@ -1942,8 +1942,13 @@ for (i in 1:n_sims) {
   #
   
 
-lmer_model <- lmer(Y ~ 1+X1 + X2 + X3 + (1 + X1 + X2 + X3 | subject), data = df_simple)
+lmer_model <- lmer(Y ~ 1+X1 + (1 + X1| subject), data = df_simple)
 summary(lmer_model)
+
+
+fm_test = fastmix_iterative(Y = y_values,Des= Des, random = c(1,2),iter = 50)
+
+
 
 ```
 
@@ -1953,6 +1958,7 @@ summary(lmer_model)
 #===========================
 # Step 0: Setup
 #===========================
+Y = y_values
 N <- length(Y) # total number of observations
 
 # Exclude the first column (ID)
@@ -1987,7 +1993,7 @@ number <- c(0, number)
 # Step 1: Initial estimation
 #===========================
 # Initial fixed effects (OLS)
-coef.fix <- lm.fit(x = as.matrix(Des[, -1]), y = Y)$coefficients
+coef.fix <- lm.fit(x = as.matrix(Des[, -1]), y = as.matrix(Y))$coefficients
 resid_global <- Y - as.matrix(Des[, -1]) %*% coef.fix
 sigma2_init <- as.numeric(var(resid_global))
 p_rand <- length(random)
@@ -2011,7 +2017,7 @@ for(i in 1:iter) {
   # Function to compute subject-specific quantities
   subject_fun <- function(i) {
     idx <- idx_list[[i]]
-    Yi <- Y[idx]
+    Yi <- Y[idx,1]
     Xi <- as.matrix(Des[idx, -1])
     Zi <- as.matrix(DZ[idx, -1])
     
@@ -2072,7 +2078,7 @@ for(i in 1:iter) {
     
     
     # Random effects (posterior mode)
-    gamma_i <- Sigma_gamma_init %*% t(Zi) %*% Vi_inv %*% resid_wls[idx]
+  gamma_i <- Sigma_gamma_init %*% t(Zi) %*% Vi_inv %*% resid_wls[idx,1]
     gamma_cov_i <- gamma_i %*% t(gamma_i) + Sigma_Ui
     
     list(gamma_i = gamma_i, gamma_cov_i = gamma_cov_i)
@@ -2087,7 +2093,7 @@ for(i in 1:iter) {
   ssq <- 0
   for (i in 1:m) {
     Xi <- as.matrix(Des[idx_list[[i]], -1])
-    Yi <- Y[idx_list[[i]]]
+    Yi <- Y[idx_list[[i]],1]
     Zi <- as.matrix(DZ[idx_list[[i]], -1])
     g <- gamma_i_list[[i]]
     resid_post <- Yi - Xi %*% beta_wls - Zi %*% g
@@ -2106,18 +2112,122 @@ for(i in 1:iter) {
 }
 
 
+# subject_fun <- function(i, Y, Des, DZ, Sigma_gamma, sigma2, idx_list) {
+#   idx <- idx_list[[i]]
+#   Yi <- Y[idx]
+#   Xi <- as.matrix(Des[idx, -1])
+#   Zi <- as.matrix(DZ[idx, -1])
+#   
+#   #Sigma_Yi <- Zi %*% Sigma_gamma %*% t(Zi) + sigma2 * diag(nrow(Zi))
+#   calc_once <- solve(Sigma_Yi)
+#   
+#   p1 <- t(Xi) %*% calc_once %*% Xi
+#   p2 <- t(Xi) %*% calc_once %*% Yi
+#   
+#   list(Sigma_Yi = Sigma_Yi, p1 = p1, p2 = p2, Xi = Xi, Zi = Zi, Yi = Yi, idx = idx)
+# }
 
-beta_wls
-norm(t(t(summary(lmer_model)$coef[,1]))-c(2,1,2,-1))
-print(norm(beta_wls - c(1,2,-1,2)))
+
+
+# gamma_fun <- function(i, subject_results, Y, Des, beta, Sigma_gamma, sigma2) {
+#   Zi  <- subject_results[[i]]$Zi
+#   idx <- subject_results[[i]]$idx
+#   
+#   resid_i <- Y[idx] - as.matrix(Des[idx, -1]) %*% beta
+#   
+#   wood_1 <- rsolve(
+#     rsolve(Sigma_gamma) + (1 / sigma2) * (t(Zi) %*% Zi),
+#     min.cond.num = 1e-6
+#   )
+#   
+#   wood_2 <- (1 / sigma2^2) * Zi %*% wood_1 %*% t(Zi)
+#   Vi_inv <- (1 / sigma2) * diag(nrow(Zi)) - wood_2
+#   
+#   Ui <- Sigma_gamma %*% t(Zi) %*% Vi_inv
+#   Sigma_Ui <- Sigma_gamma - Ui %*% Zi %*% Sigma_gamma
+#   
+#   gamma_i <- Ui %*% resid_i
+#   gamma_cov_i <- gamma_i %*% t(gamma_i) + Sigma_Ui
+#   
+#   list(gamma_i = gamma_i, gamma_cov_i = gamma_cov_i)
+# }
+
+
+
 ```
 
 
-```{r}
+```{r fastmix_iterative}
+
+# Subfunction
+
+subject_fun <- function(i, Y, Des, DZ, Sigma_gamma, sigma2, idx_list,
+                        min.cond.num = 1e-6) {
+
+  idx <- idx_list[[i]]
+  Yi <- Y[idx]
+  Xi <- as.matrix(Des[idx, -1])
+  Zi <- as.matrix(DZ[idx, -1])
+  ni <- nrow(Zi)
+
+  Sigma_Yi <- Zi %*% Sigma_gamma %*% t(Zi) + sigma2 * diag(ni)
+
+  # Woodbury identity
+  inner <- rsolve(Sigma_gamma) + (1 / sigma2) * (t(Zi) %*% Zi)
+  W <- rsolve(inner, min.cond.num = min.cond.num)
+
+  Vi_inv <- (1 / sigma2) * diag(ni) -
+            (1 / sigma2^2) * Zi %*% W %*% t(Zi)
+
+  p1 <- t(Xi) %*% Vi_inv %*% Xi
+  p2 <- t(Xi) %*% Vi_inv %*% Yi
+
+  list(
+    Sigma_Yi = Sigma_Yi,
+    Vi_inv = Vi_inv,   
+    p1 = p1,
+    p2 = p2,
+    Xi = Xi,
+    Zi = Zi,
+    Yi = Yi,
+    idx = idx
+  )
+}
+
+
+gamma_fun <- function(i, subject_results, Y, Des, beta, Sigma_gamma) {
+
+  Zi <- subject_results[[i]]$Zi
+  Vi_inv <- subject_results[[i]]$Vi_inv
+  idx <- subject_results[[i]]$idx
+
+  resid_i <- Y[idx,1] - as.matrix(Des[idx, -1]) %*% beta
+
+  # E[gamma_i | Y_i]
+  Ui <- Sigma_gamma %*% t(Zi) %*% Vi_inv
+  gamma_i <- Ui %*% resid_i
+
+  # Var(gamma_i | Y_i)
+  Sigma_Ui <- Sigma_gamma - Ui %*% Zi %*% Sigma_gamma
+
+  gamma_cov_i <- gamma_i %*% t(gamma_i) + Sigma_Ui
+
+  list(
+    gamma_i = gamma_i,
+    gamma_cov_i = gamma_cov_i,
+    Sigma_Ui = Sigma_Ui
+  )
+}
+
+
+
+
+
+
 
 
 fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
-  
+  Y = as.matrix(Y)
   N <- length(Y)
   covariates <- colnames(Des)[-1]
   p <- length(covariates)
@@ -2149,7 +2259,7 @@ fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
   })
   
   # --- Initial estimates ---
-  coef.fix <- lm.fit(x = as.matrix(Des[, -1]), y = Y)$coefficients
+  coef.fix <- lm.fit(x = as.matrix(Des[, -1]), y = as.matrix(Y))$coefficients
   resid_global <- Y - as.matrix(Des[, -1]) %*% coef.fix
   sigma2_init <- as.numeric(var(resid_global))
   p_rand <- length(random)
@@ -2163,27 +2273,10 @@ fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
   
   for(it in 1:iter) {
     
-    # For diagnostics
-    #cat("Iteration:", it, "\n")
     
-    # Subject-specific function
-    subject_fun <- function(i) {
-      idx <- idx_list[[i]]
-      Yi <- Y[idx]
-      Xi <- as.matrix(Des[idx, -1])
-      Zi <- as.matrix(DZ[idx, -1])
-      
-      Sigma_Yi <- Zi %*% Sigma_gamma_init %*% t(Zi) + sigma2_init * diag(nrow(Zi))
-      calc_once = rsolve(Sigma_Yi)
-      
-      
-      p1 <- t(Xi) %*% calc_once %*% Xi
-      p2 <- t(Xi) %*% calc_once %*% Yi
-      
-      list(Sigma_Yi = Sigma_Yi, p1 = p1, p2 = p2, Xi = Xi, Zi = Zi, Yi = Yi, idx = idx)
-    }
-    
-    subject_results <- lapply(seq_len(m), subject_fun)
+    subject_results <- lapply(seq_len(m), function(i) {
+           subject_fun(i, Y, Des, DZ, Sigma_gamma_init, sigma2_init, idx_list)
+              })
     
     # Weighted least squares
     p1_sum <- Reduce("+", lapply(subject_results, `[[`, "p1"))
@@ -2192,42 +2285,52 @@ fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
     
     # Random effects estimation
     gamma_out <- lapply(seq_len(m), function(i) {
-      Zi <- subject_results[[i]]$Zi
-      idx <- subject_results[[i]]$idx
-      Sigma_Yi <- subject_results[[i]]$Sigma_Yi
-      
-      resid_i <- Y[idx] - as.matrix(Des[idx, -1]) %*% beta_wls
-      
-      # Woodbury
-      wood_1 <- rsolve(rsolve(Sigma_gamma_init) + (1 / sigma2_init) * (t(Zi) %*% Zi),
-                       min.cond.num = 1e-6)
-      
-      wood_2 <- (1 / sigma2_init^2) * Zi %*% wood_1 %*% t(Zi)
-      Vi_inv <- (1 / sigma2_init) * diag(nrow(Zi)) - wood_2
-      
-      Ui <- Sigma_gamma_init %*% t(Zi) %*% Vi_inv
-      Sigma_Ui <- Sigma_gamma_init - Ui %*% Zi %*% Sigma_gamma_init
-      
-      gamma_i <- Ui %*% resid_i
-      gamma_cov_i <- gamma_i %*% t(gamma_i) + Sigma_Ui
-      
-      list(gamma_i = gamma_i, gamma_cov_i = gamma_cov_i)
+      gamma_fun(
+        i = i,
+        subject_results = subject_results,
+        Y = Y,
+        Des = Des,
+        beta = beta_wls,
+        Sigma_gamma = Sigma_gamma_init
+      )
     })
+
+
     
     # Update Σγ
-    Sigma_gamma_new <- Reduce("+", lapply(gamma_out, `[[`, "gamma_cov_i")) / m
+    
+
+    
+ 
+       
+      # damp_a = 0.20
+    #Sigma_gamma_new <- Reduce("+", lapply(gamma_out, `[[`, "gamma_cov_i")) / m
+    
+    # Sigma_gamma_new <-  damp_a * Sigma_gamma_new +  (1 - damp_a) * Sigma_gamma_init
+      Sigma_gamma_new <- Reduce("+", lapply(gamma_out, `[[`, "gamma_cov_i")) / m
+      Sigma_gamma_new <- (Sigma_gamma_new + t(Sigma_gamma_new)) / 2
+      eig <- eigen(Sigma_gamma_new)
+      eig$values[eig$values < 1e-6] <- 1e-6
+      Sigma_gamma_new <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+
     
     # Update σ²
     ssq <- 0
-    for(i in 1:m) {
+    for (i in 1:m) {
       Xi <- subject_results[[i]]$Xi
       Yi <- subject_results[[i]]$Yi
       Zi <- subject_results[[i]]$Zi
       g  <- gamma_out[[i]]$gamma_i
-      resid_post <- Yi - Xi %*% beta_wls - Zi %*% g
-      ssq <- ssq + sum(resid_post^2)
+      Sigma_Ui <- gamma_out[[i]]$gamma_cov_i - g %*% t(g)
+    
+      resid_mean <- Yi - Xi %*% beta_wls - Zi %*% g
+      ssq <- ssq +
+        sum(resid_mean^2) +
+        sum(diag(Zi %*% Sigma_Ui %*% t(Zi)))
     }
+
     sigma2_new <- ssq / N
+
     
     # --- Store iteration results ---
     beta_history[[it]] <- beta_wls
@@ -2257,11 +2360,11 @@ fastmix_iterative <- function(Y, Des, random = "all", iter = 100) {
 ## Running on Simple DGP
 
 ```{r run_on_df}
-run_fastmix_on_dataset <- function(df, RAND_LIST = c(1,2,3,4), iter = 50) {
+run_fastmix_on_dataset <- function(df, RAND_LIST = c(1,2), iter = 50) {
   
   df$X00 <- 1
   
-  Des <- df[, c(1, 4, 5, 6, 7)]
+  Des <- df[, c(1, 4, 5)]
   y_values <- df[3]
   
   Y <- as.matrix(y_values)
@@ -2302,7 +2405,7 @@ end_time <- Sys.time()
 elapsed <- end_time - start_time
 print(elapsed)
 
-saveRDS(results_list, "RDS_RESULTS.RDS")
+saveRDS(results_list, "RDS_RESULTS_SIMPLE_ONE_COV.RDS")
 
 
 ```
@@ -2362,7 +2465,7 @@ print(time_needed)
 # ------------------------------
 # 1. True beta vector
 # ------------------------------
-true_beta <- c(1, 2, -1, 2)
+true_beta <- c(1, 2)
 
 # ------------------------------
 # 2. Function to compute MSE per iteration
@@ -2419,7 +2522,7 @@ legend("topright", legend = c("Individual datasets", "Average"),
 
 # True Σγ from DGP
 random_intercept_sd <- 1
-random_slope_sd <- c(0.25, 0.75, 0.5)
+random_slope_sd <- c(0.25)
 Sigma_gamma_true <- diag(c(random_intercept_sd^2, random_slope_sd^2))
 
 # Function to compute Frobenius norm errors over iterations
@@ -2437,8 +2540,8 @@ sigma_gamma_error_list <- lapply(results_list, function(res) {
 
 # Plot first dataset to create frame
 plot(sigma_gamma_error_list[[1]], type = "l", lwd = 1.5,
-     xlab = "Iteration", ylab = "MSE Err",
-     ylim = range(unlist(sigma_gamma_error_list)),
+     xlab = "Iteration", ylab = "Norm Err",
+     ylim = c(0,3),
      main = "Convergence of Σγ Estimates Across Datasets")
 
 # Overlay remaining datasets
@@ -2453,6 +2556,9 @@ lines(avg_sigma_err, col = "red", lwd = 3)
 # Optional legend
 legend("topright", legend = c("Individual datasets", "Average"),
        col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
+
+
+
 
 
 ```
@@ -2573,7 +2679,7 @@ legend("topright", legend = c("Individual datasets", "Average", "Threshold"),
 ```
 
 
-### sigma^2 convergence
+### sigma^2 convergence MSE
 
 ```{r fig.height=8, fig.width=8}
 true_sigma2 <- 1^2
@@ -2610,7 +2716,7 @@ legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
 ```
 
 
-### Sigma trajectories
+### Sigma2 trajectories
 ```{r traj_sigma2}
 
 # Convert sigma2_history list of each dataset into numeric vector
@@ -2648,11 +2754,11 @@ legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
 
 
 ```{r fin_results}
-true_beta = c(2,1,2,-1)
-true_sigma_gamma = diag(c(1,0.25,0.75,0.5)^2)
+true_beta = c(2,1)
+true_sigma_gamma = diag(c(0.5,0.25)^2)
 ## FASTMIX
 
-results_list = readRDS("RDS_RESULTS.RDS")
+#results_list = readRDS("RDS_RESULTS.RDS")
 N_results<- length(results_list)
 
 # Extract final betas from each dataset
@@ -3101,20 +3207,20 @@ legend("topright", legend = c("Individual datasets", "Average"),
 
 
 
+```
 
 
-
-
+```{r }
 # True Σγ from DGP
 random_intercept_sd <- 1
 random_slope_sd <- c(0.25, 0.75, 0.5)
-Sigma_gamma_true <- diag(c(random_intercept_sd^2, random_slope_sd^2))
+Sigma_gamma_true <- diag(c(random_slope_sd^2,random_intercept_sd^2))
 
 # Function to compute Frobenius norm errors over iterations
 compute_sigma_gamma_error <- function(Sigma_gamma_history, Sigma_true) {
   sapply(Sigma_gamma_history, function(Sigma_est) {
-    sqrt(sum((Sigma_est - Sigma_true)^2))  # Frobenius norm
-     #mean((Sigma_est - Sigma_true)^2)      # optional: MSE instead
+    #sqrt(sum((Sigma_est - Sigma_true)^2))  # Frobenius norm
+     mean((Sigma_est - Sigma_true)^2)      # optional: MSE instead
   })
 }
 
@@ -3125,8 +3231,8 @@ sigma_gamma_error_list <- lapply(results_list, function(res) {
 
 # Plot first dataset to create frame
 plot(sigma_gamma_error_list[[1]], type = "l", lwd = 1.5,
-     xlab = "Iteration", ylab = "NORM Err",
-     ylim = range(unlist(sigma_gamma_error_list)),
+     xlab = "Iteration", ylab = "MSE Err",
+     ylim = range(c(0,0.3)),
      main = "Convergence of Σγ Estimates Across Datasets")
 
 # Overlay remaining datasets
@@ -3143,122 +3249,161 @@ legend("topright", legend = c("Individual datasets", "Average"),
        col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5,3))
 
 
+```
 
 
-# ------------------------------
-# 1. Function to compute average error per iteration for dataset
-# ------------------------------
-compute_avg_subject_gamma_error <- function(gamma_history, true_re_df) {
-  # gamma_history: list of iterations, each element is list of subject vectors
-  # true_re_df: data frame with columns: rand_intercept, b_X1, b_X2, b_X3
-  n_iter <- length(gamma_history)
-  n_subjects <- nrow(true_re_df)
-  
-  sapply(1:n_iter, function(it) {
-    # For each subject, compute squared error
-    errors <- sapply(1:n_subjects, function(subj_idx) {
-      gamma_est <- as.numeric(gamma_history[[it]][[subj_idx]])
-      gamma_true <- as.numeric(true_re_df[subj_idx, -1])  # drop subject column
-      #mean((gamma_est - gamma_true)^2)  # MSE per subject
-      sqrt(sum((gamma_est - gamma_true)^2))  #norm
-    })
-    mean(errors)  # average over all subjects
-  })
-}
+```{r}
 
-# ------------------------------
-# 2. Compute average errors for all datasets
-# ------------------------------
-gamma_error_list <- lapply(1:length(results_list), function(i) {
-  compute_avg_subject_gamma_error(
-    gamma_history = results_list[[i]]$gamma_history,
-    true_re_df = simple_re_list_outlier[[i]]
-  )
+# COMMENTED OUT EVERYTHING FOR CHECKING
+# 
+# 
+# # ------------------------------
+# # 1. Function to compute average error per iteration for dataset
+# # ------------------------------
+# compute_avg_subject_gamma_error <- function(gamma_history, true_re_df) {
+#   # gamma_history: list of iterations, each element is list of subject vectors
+#   # true_re_df: data frame with columns: rand_intercept, b_X1, b_X2, b_X3
+#   n_iter <- length(gamma_history)
+#   n_subjects <- nrow(true_re_df)
+#   
+#   sapply(1:n_iter, function(it) {
+#     # For each subject, compute squared error
+#     errors <- sapply(1:n_subjects, function(subj_idx) {
+#       gamma_est <- as.numeric(gamma_history[[it]][[subj_idx]])
+#       gamma_true <- as.numeric(true_re_df[subj_idx, -1])  # drop subject column
+#       #mean((gamma_est - gamma_true)^2)  # MSE per subject
+#       sqrt(sum((gamma_est - gamma_true)^2))  #norm
+#     })
+#     mean(errors)  # average over all subjects
+#   })
+# }
+# 
+# # ------------------------------
+# # 2. Compute average errors for all datasets
+# # ------------------------------
+# gamma_error_list <- lapply(1:length(results_list), function(i) {
+#   compute_avg_subject_gamma_error(
+#     gamma_history = results_list[[i]]$gamma_history,
+#     true_re_df = simple_re_list_outlier[[i]]
+#   )
+# })
+# 
+# # ------------------------------
+# # 3. Plotting all datasets together
+# # ------------------------------
+# # Plot first dataset to create plot frame
+# 
+# plot(gamma_error_list[[1]], type = "l", lwd = 1.5,
+#      xlab = "Iteration", ylab = "Average NORM ERR per subject",
+#      ylim = range(unlist(gamma_error_list)),
+#      main = "Convergence of γ Estimates Across Datasets")
+# 
+# # Overlay remaining datasets with semi-transparent lines
+# for(i in 2:length(gamma_error_list)) {
+#   lines(gamma_error_list[[i]], col = rgb(0,0,0,0.2))
+# }
+# 
+# # Average across datasets
+# avg_gamma_err <- Reduce("+", gamma_error_list) / length(gamma_error_list)
+# lines(avg_gamma_err, col = "red", lwd = 3)
+# 
+# # Add legend
+# legend("topright", legend = c("Individual datasets", "Average"),
+#        col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5, 3))
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# compute_sigma_gamma_tol_with_init <- function(Sigma_gamma_history, p) {
+#   # p = number of random effects (size of Σγ)
+#   Sigma_init <- diag(0.1, p)
+#   
+#   # Prepend initial matrix
+#   Sigma_full <- c(list(Sigma_init), Sigma_gamma_history)
+#   
+#   n_iter <- length(Sigma_full)
+#   tol <- numeric(n_iter - 1)
+#   
+#   for(it in 2:n_iter) {
+#     Sigma_prev <- Sigma_full[[it - 1]]
+#     Sigma_curr <- Sigma_full[[it]]
+#     
+#     #tol[it - 1] <- sqrt(sum((Sigma_curr - Sigma_prev)^2))  # Frobenius norm
+#     tol[it - 1] <- mean((Sigma_curr - Sigma_prev)^2)# MSE
+#   }
+#   tol
+# }
+# 
+# p_rand <- ncol(results_list[[1]]$Sigma_gamma_history[[1]])  # number of random effects
+# 
+# sigma_gamma_tol_list <- lapply(results_list, function(res) {
+#   compute_sigma_gamma_tol_with_init(res$Sigma_gamma_history, p = p_rand)
+# })
+# # Plot first dataset
+# plot(sigma_gamma_tol_list[[1]], type = "l", lwd = 1.5,
+#      xlab = "Iteration", ylab = "Tolerance (THRESHOLD 1e-6)",
+#      ylim = range(unlist(sigma_gamma_tol_list)),
+#      main = "Convergence Tolerance of Σγ")
+# 
+# # Overlay remaining datasets
+# for(i in 2:length(sigma_gamma_tol_list)) {
+#   lines(sigma_gamma_tol_list[[i]], col = rgb(0,0,0,0.2))
+# }
+# 
+# # Average tolerance
+# avg_sigma_tol <- Reduce("+", sigma_gamma_tol_list) / length(sigma_gamma_tol_list)
+# lines(avg_sigma_tol, col = "red", lwd = 3)
+# 
+# # Optional: horizontal threshold for convergence
+# abline(h = 1e-6, col = "blue", lty = 2)
+# 
+# legend("topright", legend = c("Individual datasets", "Average", "Threshold"),
+#        col = c(rgb(0,0,0,0.2), "red", "blue"), lwd = c(1.5,3,2), lty = c(1,1,2))
+
+results
+```
+
+```{r traj_sigma2}
+
+# Convert sigma2_history list of each dataset into numeric vector
+sigma2_trajectories <- lapply(results_list, function(res) {
+  unlist(res$sigma2_history)
 })
-
-# ------------------------------
-# 3. Plotting all datasets together
-# ------------------------------
-# Plot first dataset to create plot frame
-
-plot(gamma_error_list[[1]], type = "l", lwd = 1.5,
-     xlab = "Iteration", ylab = "Average NORM ERR per subject",
-     ylim = range(unlist(gamma_error_list)),
-     main = "Convergence of γ Estimates Across Datasets")
-
-# Overlay remaining datasets with semi-transparent lines
-for(i in 2:length(gamma_error_list)) {
-  lines(gamma_error_list[[i]], col = rgb(0,0,0,0.2))
-}
-
-# Average across datasets
-avg_gamma_err <- Reduce("+", gamma_error_list) / length(gamma_error_list)
-lines(avg_gamma_err, col = "red", lwd = 3)
-
-# Add legend
-legend("topright", legend = c("Individual datasets", "Average"),
-       col = c(rgb(0,0,0,0.2), "red"), lwd = c(1.5, 3))
-
-
-
-
-
-
-
-
-
-
-
-
-
-compute_sigma_gamma_tol_with_init <- function(Sigma_gamma_history, p) {
-  # p = number of random effects (size of Σγ)
-  Sigma_init <- diag(0.1, p)
-  
-  # Prepend initial matrix
-  Sigma_full <- c(list(Sigma_init), Sigma_gamma_history)
-  
-  n_iter <- length(Sigma_full)
-  tol <- numeric(n_iter - 1)
-  
-  for(it in 2:n_iter) {
-    Sigma_prev <- Sigma_full[[it - 1]]
-    Sigma_curr <- Sigma_full[[it]]
-    
-    #tol[it - 1] <- sqrt(sum((Sigma_curr - Sigma_prev)^2))  # Frobenius norm
-    tol[it - 1] <- mean((Sigma_curr - Sigma_prev)^2)# MSE
-  }
-  tol
-}
-
-p_rand <- ncol(results_list[[1]]$Sigma_gamma_history[[1]])  # number of random effects
-
-sigma_gamma_tol_list <- lapply(results_list, function(res) {
-  compute_sigma_gamma_tol_with_init(res$Sigma_gamma_history, p = p_rand)
-})
-# Plot first dataset
-plot(sigma_gamma_tol_list[[1]], type = "l", lwd = 1.5,
-     xlab = "Iteration", ylab = "Tolerance (THRESHOLD 1e-6)",
-     ylim = range(unlist(sigma_gamma_tol_list)),
-     main = "Convergence Tolerance of Σγ")
+# Plot the first dataset trajectory
+plot(sigma2_trajectories[[1]], type = "l", lwd = 1.5,
+     xlab = "Iteration", ylab = expression(sigma^2),
+     ylim = range(10,0),
+     main = expression("Trajectory of"~sigma^2~"across all datasets"))
 
 # Overlay remaining datasets
-for(i in 2:length(sigma_gamma_tol_list)) {
-  lines(sigma_gamma_tol_list[[i]], col = rgb(0,0,0,0.2))
+for(i in 2:length(sigma2_trajectories)) {
+  lines(sigma2_trajectories[[i]], col = rgb(0,0,0,0.2))
 }
 
-# Average tolerance
-avg_sigma_tol <- Reduce("+", sigma_gamma_tol_list) / length(sigma_gamma_tol_list)
-lines(avg_sigma_tol, col = "red", lwd = 3)
+# Average trajectory across datasets
+avg_sigma2 <- Reduce("+", sigma2_trajectories) / length(sigma2_trajectories)
+lines(avg_sigma2, col = "red", lwd = 3)
 
-# Optional: horizontal threshold for convergence
-abline(h = 1e-6, col = "blue", lty = 2)
+# True σ² from DGP
+true_sigma2 <- 1
+abline(h = true_sigma2, col = "blue", lty = 2)
 
-legend("topright", legend = c("Individual datasets", "Average", "Threshold"),
+# Legend
+legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
        col = c(rgb(0,0,0,0.2), "red", "blue"), lwd = c(1.5,3,2), lty = c(1,1,2))
 
 
 ```
+
 
 ```{r}
 true_sigma2 <- 1^2
@@ -3272,7 +3417,7 @@ sigma2_mse_list <- lapply(results_list, function(res) {
 
 plot(sigma2_mse_list[[1]], type = "l", lwd = 1.5,
      xlab = "Iteration", ylab = "MSE of σ²",
-     ylim = range(unlist(sigma2_mse_list)),
+     ylim = range(c(10,0)),
      main = "Convergence of σ² Estimates Across Datasets")
 
 for(i in 2:length(sigma2_mse_list)) {
@@ -3333,6 +3478,10 @@ legend("topright", legend = c("Individual datasets", "Average", "True σ²"),
 
 ```{r}
 true_beta= c(2,1,2,-1)
+random_intercept_sd <- 1
+random_slope_sd <- c(0.25, 0.75, 0.5)
+true_sigma_gamma <- diag(c(random_intercept_sd^2,random_slope_sd^2))
+
 
 results_list = readRDS("results_OUTLIER.RDS")
 N_results<- length(results_list)
@@ -3464,18 +3613,70 @@ Sigma_gamma_mean_lmer
 
 ```
 
+# INSEPCTION
 
 
 
-```{r}
 
-for(i in 1:1000){
-  test = results_list[[i]]$Sigma_gamma_history[[50]]
-  if(mean((test - true_sigma_gamma)^2)>20){print(i)}
+
+```{r fig.height=10, fig.width=10}
+true_beta <- c(1, 2, -1, 2)
+true_sigma <- diag(c(0.25^2, 0.75^2, 0.5^2, 1^2))
+
+for(i in 900){
+  
+  # Calculate RMSE for beta
+  rmse_beta <- sapply(results_list[[i]]$beta_history, function(mat) {
+    sqrt(mean((as.numeric(mat[,1]) - true_beta)^2))
+  })
+  
+  # Calculate RMSE for Sigma_gamma
+  rmse_sigma <- sapply(results_list[[i]]$Sigma_gamma_history, function(S) {
+    sqrt(mean((S - true_sigma)^2))
+  })
+  
+  # Calculate tolerance (difference between consecutive Sigma_gamma matrices)
+  tolerance <- sapply(2:length(results_list[[i]]$Sigma_gamma_history), function(j) {
+    sqrt(mean((results_list[[i]]$Sigma_gamma_history[[j]] - 
+               results_list[[i]]$Sigma_gamma_history[[j-1]])^2))
+  })
+  
+  # Set up plot with appropriate y-axis range
+  y_range <- range(c(rmse_beta, rmse_sigma, c(NA, tolerance)), na.rm = TRUE)
+  
+  plot(
+    rmse_beta,
+    type = "l",
+    lwd = 2,
+    col = "blue",
+    xlab = "Iteration",
+    ylab = "RMSE / Tolerance",
+    main = paste("Convergence Metrics - Dataset", i),
+    ylim = y_range
+  )
+  
+  # Add Sigma RMSE
+  lines(rmse_sigma, lwd = 2, col = "red")
+  
+  # Add tolerance (starts at iteration 2)
+  lines(2:length(results_list[[i]]$Sigma_gamma_history), tolerance, lwd = 2, col = "darkgreen")
+  
+  # Add legend
+  legend("topright", 
+         legend = c("Beta RMSE", "Sigma RMSE", "Sigma Tolerance"),
+         col = c("blue", "red", "darkgreen"),
+         lwd = 2,
+         bty = "n")
+  
+  grid()
 }
 
 
 
-  results_list[[11]]$Sigma_gamma_history
+
+results_list[[900]]$Sigma_gamma_history
+
+
 ```
+
 
